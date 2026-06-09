@@ -42,8 +42,8 @@ def _logo_b64(filename: str) -> str:
     return base64.b64encode(p.read_bytes()).decode()
 
 
-# Store temporaneo (per processo) state->code_verifier per il flusso PKCE.
-# Necessario perche' il redirect a Spotify ricarica la pagina e azzera session_state.
+# Il verifier PKCE viene salvato in st.session_state (sopravvive al redirect Spotify).
+# _PKCE_STORE e' mantenuto come alias per retrocompatibilita' ma non e' piu' usato.
 _PKCE_STORE: dict[str, str] = {}
 
 # Lingua UI -> (nome per il prompt LLM, codice biografia TheAudioDB)
@@ -455,7 +455,7 @@ def handle_spotify_callback() -> None:
     state = qp.get("state")
     if not code or not state:
         return
-    verifier = _PKCE_STORE.pop(state, None)
+    verifier = st.session_state.pop(f"_pkce_{state}", None) or _PKCE_STORE.pop(state, None)
     if verifier:
         try:
             token = spotify_pkce.exchange_code(
@@ -530,7 +530,7 @@ def render_spotify_login(container) -> None:
     verifier = spotify_pkce.make_verifier()
     challenge = spotify_pkce.make_challenge(verifier)
     state = spotify_pkce.make_state()
-    _PKCE_STORE[state] = verifier
+    st.session_state[f"_pkce_{state}"] = verifier
     auth_url = spotify_pkce.build_auth_url(
         client_id=settings.spotify_client_id,
         redirect_uri=settings.spotify_redirect_uri,
