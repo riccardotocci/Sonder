@@ -1,0 +1,15 @@
+# Tema "Neon studio" scuro per "Empathy for the Devil"
+[theme]
+base = "dark"
+primaryColor = "#ff2d78"
+backgroundColor = "#07070f"
+secondaryBackgroundColor = "#11111f"
+textColor = "#e8e6f5"
+font = "sans serif"
+
+[server]
+headless = true
+enableStaticServing = true
+
+[browser]
+gatherUsageStats = false

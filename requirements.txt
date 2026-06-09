@@ -1,0 +1,15 @@
+# ===== Empathy for the Devil - dipendenze =====
+# Interfaccia web
+streamlit>=1.40.0
+
+# Chiamate HTTP (Musixmatch, TheAudioDB)
+requests>=2.31.0
+
+# Motore LLM "Thinking" (OpenAI / OpenRouter / DeepSeek-R1)
+openai>=1.40.0
+
+# Automazione playlist Spotify
+spotipy>=2.24.0
+
+# Caricamento variabili d'ambiente dal file .env
+python-dotenv>=1.0.0

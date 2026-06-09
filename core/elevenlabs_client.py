@@ -1,0 +1,65 @@
+"""ElevenLabs Text-to-Speech client.
+
+Generates MP3 audio bytes for narration speeches using the ElevenLabs API.
+Falls back gracefully when the API key is not configured.
+"""
+from __future__ import annotations
+
+import requests
+
+from core.config import settings
+
+
+class ElevenLabsError(Exception):
+    pass
+
+
+class ElevenLabsClient:
+    """Client for the ElevenLabs v1 Text-to-Speech API."""
+
+    BASE_URL = "https://api.elevenlabs.io/v1"
+    DEFAULT_VOICE = "JBFqnCBsd6RMkjVDRZzb"   # George — warm, narrative
+    DEFAULT_MODEL = "eleven_multilingual_v2"
+
+    def text_to_speech(
+        self,
+        text: str,
+        voice_id: str | None = None,
+        model_id: str | None = None,
+    ) -> bytes:
+        """Return MP3 audio bytes for *text*.
+
+        Raises ElevenLabsError on any API or network failure.
+        """
+        if not settings.elevenlabs_ready:
+            raise ElevenLabsError("ELEVENLABS_API_KEY not configured.")
+
+        vid = voice_id or settings.elevenlabs_voice_id or self.DEFAULT_VOICE
+        mid = model_id or self.DEFAULT_MODEL
+        url = f"{self.BASE_URL}/text-to-speech/{vid}"
+
+        headers = {
+            "xi-api-key": settings.elevenlabs_api_key,
+            "Content-Type": "application/json",
+            "Accept": "audio/mpeg",
+        }
+        payload = {
+            "text": text,
+            "model_id": mid,
+            "voice_settings": {
+                "stability": 0.50,
+                "similarity_boost": 0.75,
+            },
+        }
+
+        try:
+            r = requests.post(url, headers=headers, json=payload, timeout=60)
+        except requests.RequestException as exc:
+            raise ElevenLabsError(f"Network error: {exc}") from exc
+
+        if not r.ok:
+            raise ElevenLabsError(
+                f"ElevenLabs API {r.status_code}: {r.text[:300]}"
+            )
+
+        return r.content
