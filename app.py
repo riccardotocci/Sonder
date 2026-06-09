@@ -1,4 +1,4 @@
-"""Empathy for the Devil - interfaccia Streamlit.
+"""Sonder - interfaccia Streamlit.
 
 Entry point dell'applicazione. Orchestra il flusso:
     Musixmatch -> TheAudioDB -> LLM (Thinking) -> Spotify -> UI
@@ -85,21 +85,21 @@ TTS_LANG: dict[str, str] = {
 
 # Saluto iniziale della chat per ciascuna lingua (per "Auto" usiamo un saluto bilingue).
 GREETINGS: dict[str, str] = {
-    "Auto": "Hi, I'm **Empathy for the Devil**. What would you like to talk about? "
+    "Auto": "Hi, I'm **Sonder**. What would you like to talk about? "
             "Feel free to write in any language and I'll reply in the same. 😈",
-    "Italiano": "Ciao, sono **Empathy for the Devil**. Di cosa vuoi parlare oggi? 😈",
-    "English": "Hi, I'm **Empathy for the Devil**. What would you like to talk about? 😈",
-    "Français": "Salut, je suis **Empathy for the Devil**. De quoi veux-tu parler ? 😈",
-    "Español": "Hola, soy **Empathy for the Devil**. ¿De qué quieres hablar? 😈",
-    "Deutsch": "Hallo, ich bin **Empathy for the Devil**. Worüber möchtest du sprechen? 😈",
-    "Português": "Olá, sou **Empathy for the Devil**. Sobre o que queres falar? 😈",
-    "Nederlands": "Hoi, ik ben **Empathy for the Devil**. Waarover wil je praten? 😈",
-    "Polski": "Cześć, jestem **Empathy for the Devil**. O czym chcesz porozmawiać? 😈",
-    "Русский": "Привет, я **Empathy for the Devil**. О чём хочешь поговорить? 😈",
-    "日本語": "こんにちは、**Empathy for the Devil** です。何について話したいですか？ 😈",
-    "中文": "你好，我是 **Empathy for the Devil**。你想聊些什么？ 😈",
-    "한국어": "안녕하세요, 저는 **Empathy for the Devil** 입니다. 무엇에 대해 이야기하고 싶으신가요? 😈",
-    "العربية": "مرحبًا، أنا **Empathy for the Devil**. عن ماذا تريد أن نتحدث؟ 😈",
+    "Italiano": "Ciao, sono **Sonder**. Di cosa vuoi parlare oggi? 😈",
+    "English": "Hi, I'm **Sonder**. What would you like to talk about? 😈",
+    "Français": "Salut, je suis **Sonder**. De quoi veux-tu parler ? 😈",
+    "Español": "Hola, soy **Sonder**. ¿De qué quieres hablar? 😈",
+    "Deutsch": "Hallo, ich bin **Sonder**. Worüber möchtest du sprechen? 😈",
+    "Português": "Olá, sou **Sonder**. Sobre o que queres falar? 😈",
+    "Nederlands": "Hoi, ik ben **Sonder**. Waarover wil je praten? 😈",
+    "Polski": "Cześć, jestem **Sonder**. O czym chcesz porozmawiać? 😈",
+    "Русский": "Привет, я **Sonder**. О чём хочешь поговорить? 😈",
+    "日本語": "こんにちは、**Sonder** です。何について話したいですか？ 😈",
+    "中文": "你好，我是 **Sonder**。你想聊些什么？ 😈",
+    "한국어": "안녕하세요, 저는 **Sonder** 입니다. 무엇에 대해 이야기하고 싶으신가요? 😈",
+    "العربية": "مرحبًا، أنا **Sonder**. عن ماذا تريد أن نتحدث؟ 😈",
 }
 
 # Messaggi di rifiuto in-character per argomenti fuori ambito musicale.
@@ -433,8 +433,8 @@ def create_spotify_playlist(tracks: list[dict[str, str]], name: str) -> None:
     try:
         sp = SpotifyClient()
         playlist = sp.create_thematic_playlist(
-            name=f"Empathy · {name}"[:100],
-            description="Curated by Empathy for the Devil during the conversation.",
+            name=f"Sonder · {name}"[:100],
+            description="Curated by Sonder during the conversation.",
             tracks=tracks,
         )
         st.success(f"Playlist created: {playlist.name} ({playlist.track_count} tracks)")
@@ -1103,8 +1103,8 @@ STUDIO_HTML = """
       const me = await (await api('/me')).json();
       const created = await (await api('/users/' + me.id + '/playlists', {
         method: 'POST',
-        body: JSON.stringify({ name: PLAYLIST_NAME || 'Empathy for the Devil', public: false,
-          description: 'Curated by Empathy for the Devil' })
+        body: JSON.stringify({ name: PLAYLIST_NAME || 'Sonder', public: false,
+          description: 'Curated by Sonder' })
       })).json();
       const uris = [];
       for (const t of TRACKS) { const u = await resolveUri(t); if (u) uris.push(u); }
@@ -1124,7 +1124,7 @@ STUDIO_HTML = """
   window.onSpotifyWebPlaybackSDKReady = () => {
     if (!TOKEN) return;
     player = new Spotify.Player({
-      name: 'Empathy for the Devil',
+      name: 'Sonder',
       getOAuthToken: cb => cb(TOKEN),
       volume: 0.8
     });
@@ -1197,7 +1197,7 @@ def render_studio_component(studio: dict, tts_lang: str) -> None:
     ]
     tracks_json = json.dumps(payload, ensure_ascii=False).replace("</", "<\\/")
     playlist_name = json.dumps(
-        f"Empathy · {studio.get('prompt', '')[:60]}", ensure_ascii=False
+        f"Sonder · {studio.get('prompt', '')[:60]}", ensure_ascii=False
     ).strip('"')
     rendered = (
         STUDIO_HTML.replace("__TRACKS__", tracks_json)
@@ -1408,7 +1408,7 @@ def render_example_prompts() -> None:
 # --------------------------------------------------------------------------- #
 def main() -> None:
     st.set_page_config(
-        page_title="Empathy for the Devil",
+        page_title="Sonder",
         page_icon="😈",
         layout="wide",
         initial_sidebar_state="expanded",
@@ -1495,7 +1495,7 @@ def main() -> None:
             unsafe_allow_html=True,
         )
     else:
-        st.markdown('<div class="hero-title">Empathy for the Devil</div>', unsafe_allow_html=True)
+        st.markdown('<div class="hero-title">Sonder</div>', unsafe_allow_html=True)
 
     # --- Intestazione + vista conversazione o regia ---
     if has_tracks:
