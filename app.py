@@ -1011,7 +1011,7 @@ STUDIO_HTML = """
     const box = document.getElementById('lyrics-box');
     if (!t.lyrics || !t.lyrics.trim()) { section.style.display = 'none'; return; }
     section.style.display = 'block';
-    const lines = t.lyrics.split('\n')
+    const lines = t.lyrics.split('\\n')
       .map(l => l.trim())
       .filter(l => l && !l.startsWith('****') && !l.toLowerCase().includes('commercial use'));
     box.innerHTML = lines.map((l, idx) =>
