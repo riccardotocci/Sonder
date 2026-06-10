@@ -42,11 +42,15 @@ def _logo_b64(filename: str) -> str:
     return base64.b64encode(p.read_bytes()).decode()
 
 
-# Il verifier PKCE va conservato lato server (process-global): il redirect verso
-# Spotify provoca un full page reload e Streamlit avvia una nuova sessione, quindi
-# st.session_state non sopravvive. _PKCE_STORE (keyed by state) sopravvive invece
-# tra i rerun nello stesso processo server.
-_PKCE_STORE: dict[str, str] = {}
+# Il verifier PKCE va conservato lato server: il redirect verso Spotify provoca
+# un full page reload e Streamlit avvia una nuova sessione, quindi st.session_state
+# non sopravvive. NB: anche le variabili a livello di modulo in app.py vengono
+# azzerate a ogni rerun (lo script principale e' rieseguito da capo), percio'
+# usiamo st.cache_resource, che persiste nel processo server tra sessioni e rerun.
+@st.cache_resource
+def _pkce_store() -> dict[str, str]:
+    """Store condiviso state -> verifier, persistente tra sessioni/rerun."""
+    return {}
 
 # Lingua UI -> (nome per il prompt LLM, codice biografia TheAudioDB)
 # "🌐 Auto" => il modello riconosce automaticamente la lingua dell'utente.
@@ -457,8 +461,12 @@ def handle_spotify_callback() -> None:
     state = qp.get("state")
     if not code or not state:
         return
-    verifier = st.session_state.pop(f"_pkce_{state}", None) or _PKCE_STORE.pop(state, None)
-    if verifier:
+    verifier = st.session_state.pop(f"_pkce_{state}", None) or _pkce_store().pop(state, None)
+    if not verifier:
+        st.session_state["sp_auth_error"] = (
+            "Sessione di login scaduta o non trovata: riprova a fare login."
+        )
+    else:
         try:
             token = spotify_pkce.exchange_code(
                 client_id=settings.spotify_client_id,
@@ -534,7 +542,7 @@ def render_spotify_login(container) -> None:
     state = spotify_pkce.make_state()
     # Salva il verifier lato server: sopravvive al redirect verso Spotify
     # (la nuova sessione Streamlit non conserva st.session_state).
-    _PKCE_STORE[state] = verifier
+    _pkce_store()[state] = verifier
     st.session_state[f"_pkce_{state}"] = verifier
     auth_url = spotify_pkce.build_auth_url(
         client_id=settings.spotify_client_id,
