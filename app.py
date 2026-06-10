@@ -811,6 +811,14 @@ STUDIO_HTML = """
   }
   #p-time { color: #8f8aa8; font-family: 'JetBrains Mono', monospace; font-size: .78rem; }
   #p-msg { color: #8f8aa8; font-size: .78rem; margin-top: 10px; }
+  #sp-embed {
+    width: 100%; height: 152px; border: 0; border-radius: 12px; margin-top: 12px;
+    background: rgba(255,255,255,.04);
+  }
+  #p-open {
+    display: none; margin-top: 8px; color: #1db954; font-size: .82rem;
+    text-decoration: none; font-weight: 600;
+  }
   #need-login { color: #8f8aa8; font-size: .9rem; padding: 12px 4px; }
 
   /* ---- Lyrics panel ---- */
@@ -862,6 +870,10 @@ STUDIO_HTML = """
           <span id="p-time">0:00</span>
         </div>
         <div id="p-msg">Starting player&hellip;</div>
+        <iframe id="sp-embed" title="Spotify embedded player" style="display:none"
+          allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
+          loading="lazy"></iframe>
+        <a id="p-open" target="_blank" rel="noopener">Open this track on Spotify</a>
       </div>
       <div id="lyrics-section" style="display:none;">
         <div class="col-h" style="margin-top:12px;">Lyrics</div>
@@ -873,8 +885,8 @@ STUDIO_HTML = """
 <script>
   const TRACKS = __TRACKS__;
   const TTSLANG = "__TTSLANG__";
-  const TOKEN = "__TOKEN__";
-  const PLAYLIST_NAME = "__PLAYLIST__";
+  const TOKEN = __TOKEN__;
+  const PLAYLIST_NAME = __PLAYLIST__;
   const PALETTE = ["#ff2d78","#f97316","#22d3ee","#facc15","#c2410c","#34d399"];
 
   let player = null;
@@ -907,6 +919,38 @@ STUDIO_HTML = """
 
   function esc(s) {
     const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML;
+  }
+
+  function spotifyTrackId(uri) {
+    const m = String(uri || '').match(/spotify:track:([A-Za-z0-9]+)/);
+    return m ? m[1] : '';
+  }
+
+  function showSpotifyEmbed(uri) {
+    const id = spotifyTrackId(uri);
+    if (!id) return;
+    const embed = document.getElementById('sp-embed');
+    const open = document.getElementById('p-open');
+    embed.src = 'https://open.spotify.com/embed/track/' + id + '?utm_source=generator';
+    embed.style.display = 'block';
+    open.href = 'https://open.spotify.com/track/' + id;
+    open.style.display = 'inline-block';
+  }
+
+  async function prepareTrackPlayer(i) {
+    const t = TRACKS[i];
+    pTitle.textContent = t.title || '—';
+    pArtist.textContent = t.artist || '';
+    if (t.image) { pArt.src = t.image; pArt.style.display = 'block'; }
+    if (!TOKEN) return;
+    const uri = await resolveUri(t);
+    if (current !== i) return;
+    if (uri) {
+      showSpotifyEmbed(uri);
+      setPMsg(deviceId ? 'Player ready ✓' : 'Embedded player ready. Premium enables full playback controls.');
+    } else {
+      setPMsg('Track not found on Spotify.');
+    }
   }
 
   // ---- Lista brani ----
@@ -948,6 +992,7 @@ STUDIO_HTML = """
     cMeta.textContent = bits.filter(Boolean).join('  ·  ');
     cSpeech.textContent = t.speech || (t.reason || 'No speech available for this track.');
     showLyrics(i);
+    prepareTrackPlayer(i);
   }
 
   // ---- Lyrics ----
@@ -1047,7 +1092,7 @@ STUDIO_HTML = """
     setStatus('🔎 Searching for track on Spotify…');
     const uri = await resolveUri(TRACKS[i]);
     if (!uri) { setStatus('Track not found on Spotify'); if (seq) setTimeout(advance, 1500); return; }
-    if (!deviceId) { setPMsg('Player not ready yet: try again in a moment.'); setStatus('Player not ready'); if (seq) setTimeout(advance, 2500); return; }
+    if (!deviceId) { setPMsg('Full player not ready. Use the embedded Spotify player below.'); setStatus('Embedded player ready'); if (seq) setTimeout(advance, 2500); return; }
     playingConfirmed = false;
     try {
       const r = await api('/me/player/play?device_id=' + deviceId, { method: 'PUT', body: JSON.stringify({ uris: [uri] }) });
@@ -1181,6 +1226,11 @@ STUDIO_HTML = """
   if (TOKEN) {
     document.getElementById('player').style.display = 'block';
     document.getElementById('addPlaylist').style.display = 'block';
+    if (TRACKS.length) {
+      current = 0;
+      highlight(0);
+      showCenter(0);
+    }
   } else {
     document.getElementById('need-login').style.display = 'block';
   }
@@ -1203,6 +1253,7 @@ def render_studio_component(studio: dict, tts_lang: str) -> None:
             "origin": t.get("origin", ""),
             "reason": t.get("reason", ""),
             "image": t.get("image", ""),
+            "uri": t.get("uri", ""),
             "audio_b64": t.get("audio_b64", ""),
             "lyrics": t.get("lyrics", ""),
         }
@@ -1211,12 +1262,13 @@ def render_studio_component(studio: dict, tts_lang: str) -> None:
     tracks_json = json.dumps(payload, ensure_ascii=False).replace("</", "<\\/")
     playlist_name = json.dumps(
         f"Sonder · {studio.get('prompt', '')[:60]}", ensure_ascii=False
-    ).strip('"')
+    )
+    token_json = json.dumps(spotify_token())
     rendered = (
         STUDIO_HTML.replace("__TRACKS__", tracks_json)
         .replace("__TTSLANG__", tts_lang or "")
         .replace("__PLAYLIST__", playlist_name)
-        .replace("__TOKEN__", spotify_token())
+        .replace("__TOKEN__", token_json)
     )
     components.html(rendered, height=820, scrolling=False)
 
