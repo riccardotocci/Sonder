@@ -58,6 +58,12 @@ def _persistent_token_store() -> dict[str, object]:
     """Store del token Spotify persistente tra sessioni/rerun (usato da Stay logged in)."""
     return {}
 
+
+@st.cache_resource
+def _stay_logged_store() -> dict[str, bool]:
+    """Mappa state -> stay_logged; sopravvive al redirect OAuth verso Spotify."""
+    return {}
+
 # Lingua UI -> (nome per il prompt LLM, codice biografia TheAudioDB)
 # "🌐 Auto" => il modello riconosce automaticamente la lingua dell'utente.
 LANGUAGES: dict[str, tuple[str, str]] = {
@@ -592,7 +598,7 @@ def handle_spotify_callback() -> None:
                 "expires_at": time.time() + int(token.get("expires_in", 3600)),
             }
             st.session_state["sp_token"] = tok_data
-            if st.session_state.get("sp_stay_logged"):
+            if _stay_logged_store().pop(state, False):
                 _persistent_token_store()["token"] = tok_data
             st.session_state.pop("sp_auth_error", None)
         except spotify_pkce.SpotifyPKCEError as exc:
@@ -680,9 +686,12 @@ def render_spotify_login(container) -> None:
     # Usiamo quindi un link HTML con target="_self" (stessa scheda).
     stay_logged = container.checkbox(
         "Stay logged in",
-        value=bool(_persistent_token_store().get("token")),
+        value=bool(_persistent_token_store().get("token") or st.session_state.get("sp_stay_logged")),
         key="sp_stay_logged",
     )
+    # Salva la preferenza nel server store DOPO il checkbox, così sopravvive
+    # al redirect OAuth che azzera st.session_state.
+    _stay_logged_store()[state] = stay_logged
     container.markdown(
         f'<a href="{html.escape(auth_url)}" target="_self" '
         'style="display:block;text-align:center;padding:10px 14px;'
