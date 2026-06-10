@@ -52,6 +52,12 @@ def _pkce_store() -> dict[str, str]:
     """Store condiviso state -> verifier, persistente tra sessioni/rerun."""
     return {}
 
+
+@st.cache_resource
+def _persistent_token_store() -> dict[str, object]:
+    """Store del token Spotify persistente tra sessioni/rerun (usato da Stay logged in)."""
+    return {}
+
 # Lingua UI -> (nome per il prompt LLM, codice biografia TheAudioDB)
 # "🌐 Auto" => il modello riconosce automaticamente la lingua dell'utente.
 LANGUAGES: dict[str, tuple[str, str]] = {
@@ -129,14 +135,120 @@ REFUSALS: dict[str, str] = {
 # Palette neon "studio tecnologico", ciclata per indice su pill e card.
 PALETTE = ["#ff2d78", "#f97316", "#22d3ee", "#facc15", "#c2410c", "#34d399"]
 
-EXAMPLE_PROMPTS: list[tuple[str, str]] = [
-    ("🌧️", "Songs for a rainy Sunday morning"),
-    ("🌙", "Music that sounds like 3am loneliness"),
-    ("🎸", "Rock albums that changed everything"),
-    ("🚗", "Jazz for a late-night drive"),
-    ("💔", "Emotional songs about heartbreak and loss"),
-    ("🎬", "The most cinematic soundtracks ever made"),
-]
+EXAMPLE_PROMPTS: dict[str, list[tuple[str, str]]] = {
+    "Auto": [
+        ("🌧️", "Songs for a rainy Sunday morning"),
+        ("🌙", "Music that sounds like 3am loneliness"),
+        ("🎸", "Rock albums that changed everything"),
+        ("🚗", "Jazz for a late-night drive"),
+        ("💔", "Emotional songs about heartbreak and loss"),
+        ("🎬", "The most cinematic soundtracks ever made"),
+    ],
+    "Italiano": [
+        ("🌧️", "Canzoni per una domenica mattina di pioggia"),
+        ("🌙", "Musica che sa di solitudine alle 3 di notte"),
+        ("🎸", "Album rock che hanno cambiato tutto"),
+        ("🚗", "Jazz per un viaggio notturno in macchina"),
+        ("💔", "Canzoni emozionanti su cuori spezzati e perdite"),
+        ("🎬", "Le colonne sonore più cinematografiche di sempre"),
+    ],
+    "English": [
+        ("🌧️", "Songs for a rainy Sunday morning"),
+        ("🌙", "Music that sounds like 3am loneliness"),
+        ("🎸", "Rock albums that changed everything"),
+        ("🚗", "Jazz for a late-night drive"),
+        ("💔", "Emotional songs about heartbreak and loss"),
+        ("🎬", "The most cinematic soundtracks ever made"),
+    ],
+    "Français": [
+        ("🌧️", "Chansons pour un dimanche matin pluvieux"),
+        ("🌙", "Musique qui ressemble à la solitude à 3h du matin"),
+        ("🎸", "Albums rock qui ont tout changé"),
+        ("🚗", "Jazz pour un trajet nocturne en voiture"),
+        ("💔", "Chansons émouvantes sur les chagrins d'amour"),
+        ("🎬", "Les bandes originales les plus cinématographiques"),
+    ],
+    "Español": [
+        ("🌧️", "Canciones para una mañana de domingo lluviosa"),
+        ("🌙", "Música que suena a soledad a las 3 de la madrugada"),
+        ("🎸", "Álbumes de rock que lo cambiaron todo"),
+        ("🚗", "Jazz para un viaje nocturno en coche"),
+        ("💔", "Canciones emotivas sobre corazones rotos y pérdidas"),
+        ("🎬", "Las bandas sonoras más cinematográficas de siempre"),
+    ],
+    "Deutsch": [
+        ("🌧️", "Lieder für einen regnerischen Sonntagmorgen"),
+        ("🌙", "Musik, die sich wie Einsamkeit um 3 Uhr morgens anfühlt"),
+        ("🎸", "Rockalbum, die alles verändert haben"),
+        ("🚗", "Jazz für eine nächtliche Autofahrt"),
+        ("💔", "Emotionale Lieder über Herzschmerz und Verlust"),
+        ("🎬", "Die kinematischsten Soundtracks aller Zeiten"),
+    ],
+    "Português": [
+        ("🌧️", "Músicas para uma manhã de domingo chuvosa"),
+        ("🌙", "Música que parece solidão às 3 da manhã"),
+        ("🎸", "Álbuns de rock que mudaram tudo"),
+        ("🚗", "Jazz para uma viagem noturna de carro"),
+        ("💔", "Músicas emocionantes sobre corações partidos"),
+        ("🎬", "As bandas sonoras mais cinematográficas de sempre"),
+    ],
+    "Nederlands": [
+        ("🌧️", "Nummers voor een regenachtige zondagochtend"),
+        ("🌙", "Muziek die klinkt als eenzaamheid om 3 uur 's nachts"),
+        ("🎸", "Rockalbums die alles veranderd hebben"),
+        ("🚗", "Jazz voor een nachtelijke autorit"),
+        ("💔", "Emotionele nummers over hartpijn en verlies"),
+        ("🎬", "De meest cinematografische soundtracks ooit"),
+    ],
+    "Polski": [
+        ("🌧️", "Piosenki na deszczowy niedzielny poranek"),
+        ("🌙", "Muzyka brzmiąca jak samotność o 3 w nocy"),
+        ("🎸", "Albumy rockowe, które zmieniły wszystko"),
+        ("🚗", "Jazz na nocną jazdę samochodem"),
+        ("💔", "Emocjonalne piosenki o złamanych sercach i stracie"),
+        ("🎬", "Najbardziej kinowe ścieżki dźwiękowe w historii"),
+    ],
+    "Русский": [
+        ("🌧️", "Песни для дождливого воскресного утра"),
+        ("🌙", "Музыка, звучащая как одиночество в 3 ночи"),
+        ("🎸", "Рок-альбомы, изменившие всё"),
+        ("🚗", "Джаз для ночной поездки на машине"),
+        ("💔", "Эмоциональные песни о разбитом сердце и потере"),
+        ("🎬", "Самые кинематографичные саундтреки всех времён"),
+    ],
+    "日本語": [
+        ("🌧️", "雨の日曜日の朝にぴったりな曲"),
+        ("🌙", "夜中の3時の孤独を感じさせる音楽"),
+        ("🎸", "すべてを変えたロックアルバム"),
+        ("🚗", "深夜のドライブに合うジャズ"),
+        ("💔", "失恋と喪失を歌った感動的な曲"),
+        ("🎬", "史上最も映画的なサウンドトラック"),
+    ],
+    "中文": [
+        ("🌧️", "适合雨天周日早晨的歌曲"),
+        ("🌙", "听起来像凌晨三点孤独感的音乐"),
+        ("🎸", "改变了一切的摇滚专辑"),
+        ("🚗", "深夜开车时听的爵士乐"),
+        ("💔", "关于心碎与失去的感人歌曲"),
+        ("🎬", "有史以来最具电影感的原声带"),
+    ],
+    "한국어": [
+        ("🌧️", "비 오는 일요일 아침에 어울리는 노래"),
+        ("🌙", "새벽 3시의 외로움처럼 들리는 음악"),
+        ("🎸", "모든 것을 바꾼 록 앨범"),
+        ("🚗", "심야 드라이브를 위한 재즈"),
+        ("💔", "실연과 상실에 관한 감성적인 노래"),
+        ("🎬", "역대 가장 영화적인 사운드트랙"),
+    ],
+    "العربية": [
+        ("🌧️", "أغاني لصباح أحد ممطر"),
+        ("🌙", "موسيقى تبدو كالوحدة في الساعة الثالثة صباحاً"),
+        ("🎸", "ألبومات روك غيّرت كل شيء"),
+        ("🚗", "جاز لقيادة ليلية"),
+        ("💔", "أغاني عاطفية عن القلوب المكسورة والخسارة"),
+        ("🎬", "أروع الموسيقى التصويرية السينمائية على الإطلاق"),
+    ],
+}
 
 CUSTOM_CSS = """
 <style>
@@ -474,11 +586,14 @@ def handle_spotify_callback() -> None:
                 code=code,
                 verifier=verifier,
             )
-            st.session_state["sp_token"] = {
+            tok_data = {
                 "access_token": token.get("access_token", ""),
                 "refresh_token": token.get("refresh_token", ""),
                 "expires_at": time.time() + int(token.get("expires_in", 3600)),
             }
+            st.session_state["sp_token"] = tok_data
+            if st.session_state.get("sp_stay_logged"):
+                _persistent_token_store()["token"] = tok_data
             st.session_state.pop("sp_auth_error", None)
         except spotify_pkce.SpotifyPKCEError as exc:
             st.session_state["sp_auth_error"] = str(exc)
@@ -490,7 +605,13 @@ def spotify_token() -> str:
     """Restituisce un access token valido, rinnovandolo se scaduto."""
     tok = st.session_state.get("sp_token")
     if not tok:
-        return ""
+        # Prova a ripristinare dal persistent store (Stay logged in).
+        persisted = _persistent_token_store().get("token")
+        if persisted:
+            st.session_state["sp_token"] = persisted
+            tok = persisted
+        else:
+            return ""
     if isinstance(tok, str):  # retrocompatibilita' con sessioni precedenti
         return tok
     if time.time() > tok.get("expires_at", 0) - 60 and tok.get("refresh_token"):
@@ -503,8 +624,11 @@ def spotify_token() -> str:
             tok["refresh_token"] = new.get("refresh_token", tok["refresh_token"])
             tok["expires_at"] = time.time() + int(new.get("expires_in", 3600))
             st.session_state["sp_token"] = tok
+            if _persistent_token_store().get("token"):
+                _persistent_token_store()["token"] = tok
         except spotify_pkce.SpotifyPKCEError:
             st.session_state.pop("sp_token", None)
+            _persistent_token_store().pop("token", None)
             return ""
     return tok.get("access_token", "")
 
@@ -533,6 +657,7 @@ def render_spotify_login(container) -> None:
         container.success("🟢 Connected to your Spotify")
         if container.button("Disconnect Spotify", use_container_width=True):
             st.session_state.pop("sp_token", None)
+            _persistent_token_store().pop("token", None)
             st.rerun()
         return
 
@@ -553,6 +678,11 @@ def render_spotify_login(container) -> None:
     # NB: st.link_button apre in una nuova scheda; il token finirebbe nella
     # sessione della nuova scheda lasciando quella originale non loggata.
     # Usiamo quindi un link HTML con target="_self" (stessa scheda).
+    stay_logged = container.checkbox(
+        "Stay logged in",
+        value=bool(_persistent_token_store().get("token")),
+        key="sp_stay_logged",
+    )
     container.markdown(
         f'<a href="{html.escape(auth_url)}" target="_self" '
         'style="display:block;text-align:center;padding:10px 14px;'
@@ -1460,7 +1590,7 @@ def handle_user_input(prompt: str, lang_name: str, lang_code: str) -> None:
         st.session_state["studio"] = empty_studio(prompt)
 
 
-def render_example_prompts() -> None:
+def render_example_prompts(lang_name: str = "Auto") -> None:
     """Renders clickable example prompt cards on the startup page."""
     st.markdown(
         '<p class="hero-sub">Music curation &amp; emotional storytelling powered by AI. '
@@ -1468,8 +1598,9 @@ def render_example_prompts() -> None:
         unsafe_allow_html=True,
     )
     st.markdown("")
+    prompts = EXAMPLE_PROMPTS.get(lang_name, EXAMPLE_PROMPTS["Auto"])
     cols = st.columns(3)
-    for i, (icon, text) in enumerate(EXAMPLE_PROMPTS):
+    for i, (icon, text) in enumerate(prompts):
         with cols[i % 3]:
             if st.button(f"{icon}  {text}", key=f"_ex_{i}", use_container_width=True):
                 st.session_state["_pending_example"] = text
@@ -1504,14 +1635,18 @@ def main() -> None:
         )
         st.sidebar.markdown('<hr style="border-color:rgba(255,255,255,.08);margin:6px 0 10px 0;">', unsafe_allow_html=True)
 
-    # Sidebar
-    render_status_sidebar()
-    render_spotify_login(st.sidebar)
-    st.sidebar.markdown("---")
     ui_language = st.sidebar.selectbox("🌍 Narration language", list(LANGUAGES.keys()), index=0)
     lang_name, lang_code = LANGUAGES[ui_language]
     if lang_name == "Auto":
         st.sidebar.caption("Auto mode: I'll reply in the language of your message.")
+
+    if st.sidebar.button("➕ New chat", use_container_width=True):
+        init_chat(ui_language)
+
+    # Sidebar
+    render_status_sidebar()
+    render_spotify_login(st.sidebar)
+    st.sidebar.markdown("---")
 
     # Contesto musicale opzionale (tool)
     with st.sidebar.expander("🎵 Add song context (optional)"):
@@ -1529,9 +1664,6 @@ def main() -> None:
             if st.button("Remove context", use_container_width=True):
                 st.session_state["context"] = ""
 
-    st.sidebar.markdown("---")
-    if st.sidebar.button("➕ New chat", use_container_width=True):
-        init_chat(ui_language)
     st.sidebar.caption(f"LLM model: `{settings.llm_model}`")
 
     # Stato chat
@@ -1583,7 +1715,7 @@ def main() -> None:
                 continue  # saluto iniziale: rimane nel contesto LLM ma non viene mostrato
             render_message(i, msg)
         if len(st.session_state.get("messages", [])) <= 1:
-            render_example_prompts()
+            render_example_prompts(lang_name)
 
     # --- Regia a 3 colonne (occupa tutta la schermata) ---
     # Mostrata solo quando il modello ha restituito una playlist con brani.
