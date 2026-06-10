@@ -550,8 +550,17 @@ def render_spotify_login(container) -> None:
         state=state,
         challenge=challenge,
     )
-    container.link_button(
-        "🔑 Log in with your Spotify account", auth_url, use_container_width=True
+    # NB: st.link_button apre in una nuova scheda; il token finirebbe nella
+    # sessione della nuova scheda lasciando quella originale non loggata.
+    # Usiamo quindi un link HTML con target="_self" (stessa scheda).
+    container.markdown(
+        f'<a href="{html.escape(auth_url)}" target="_self" '
+        'style="display:block;text-align:center;padding:10px 14px;'
+        'border-radius:10px;font-weight:700;text-decoration:none;'
+        'color:#04150b;background:linear-gradient(100deg,#1db954,#2de26d);'
+        'box-shadow:0 0 14px rgba(29,185,84,.35);">'
+        '🔑 Log in with your Spotify account</a>',
+        unsafe_allow_html=True,
     )
     container.caption("Full playback requires Spotify Premium.")
 
