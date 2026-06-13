@@ -140,6 +140,10 @@ REFUSALS: dict[str, str] = {
 
 # Palette neon "studio tecnologico", ciclata per indice su pill e card.
 PALETTE = ["#ff2d78", "#f97316", "#22d3ee", "#facc15", "#c2410c", "#34d399"]
+REQUIRED_SPOTIFY_PLAYLIST_SCOPES = {
+    "playlist-modify-public",
+    "playlist-modify-private",
+}
 
 EXAMPLE_PROMPTS: dict[str, list[tuple[str, str]]] = {
     "Auto": [
@@ -596,6 +600,7 @@ def handle_spotify_callback() -> None:
                 "access_token": token.get("access_token", ""),
                 "refresh_token": token.get("refresh_token", ""),
                 "expires_at": time.time() + int(token.get("expires_in", 3600)),
+                "scope": token.get("scope", ""),
             }
             st.session_state["sp_token"] = tok_data
             if _stay_logged_store().pop(state, False):
@@ -629,6 +634,7 @@ def spotify_token() -> str:
             tok["access_token"] = new.get("access_token", tok["access_token"])
             tok["refresh_token"] = new.get("refresh_token", tok["refresh_token"])
             tok["expires_at"] = time.time() + int(new.get("expires_in", 3600))
+            tok["scope"] = new.get("scope", tok.get("scope", ""))
             st.session_state["sp_token"] = tok
             if _persistent_token_store().get("token"):
                 _persistent_token_store()["token"] = tok
@@ -637,6 +643,18 @@ def spotify_token() -> str:
             _persistent_token_store().pop("token", None)
             return ""
     return tok.get("access_token", "")
+
+
+def missing_spotify_playlist_scopes() -> set[str]:
+    """Restituisce gli scope playlist mancanti, se il token li dichiara."""
+    tok = st.session_state.get("sp_token") or _persistent_token_store().get("token")
+    if not isinstance(tok, dict):
+        return set()
+    declared = tok.get("scope", "")
+    if not declared:
+        return set()
+    granted = set(str(declared).split())
+    return REQUIRED_SPOTIFY_PLAYLIST_SCOPES - granted
 
 
 def render_spotify_login(container) -> None:
@@ -661,9 +679,16 @@ def render_spotify_login(container) -> None:
 
     if spotify_token():
         container.success("🟢 Connected to your Spotify")
+        missing_scopes = missing_spotify_playlist_scopes()
+        if missing_scopes:
+            container.warning(
+                "Spotify did not grant playlist permissions yet. Disconnect, "
+                "then log in again and approve playlist access."
+            )
         if container.button("Disconnect Spotify", use_container_width=True):
             st.session_state.pop("sp_token", None)
             _persistent_token_store().pop("token", None)
+            st.session_state.pop("sp_auth_error", None)
             st.rerun()
         return
 
@@ -701,7 +726,7 @@ def render_spotify_login(container) -> None:
         '🔑 Log in with your Spotify account</a>',
         unsafe_allow_html=True,
     )
-    container.caption("Full playback requires Spotify Premium.")
+    container.caption("Login is required to save and share playlists on your Spotify account.")
 
 
 # --------------------------------------------------------------------------- #
@@ -1241,7 +1266,7 @@ STUDIO_HTML = """
     function addPlaylistErrorMessage(e) {
         const msg = String((e && e.message) || e || 'Unknown error');
         if (/\b403\b|forbidden|insufficient client scope/i.test(msg)) {
-            return 'Spotify permissions are missing. Disconnect Spotify, log in again, then retry.';
+            return 'Spotify denied playlist access (403). Disconnect, log in again, approve playlist access, then retry. If it still happens, revoke Sonder from your Spotify Apps page and log in again.';
         }
         if (/401|access token|token expired|invalid token/i.test(msg)) {
             return 'Spotify session expired. Disconnect Spotify, log in again, then retry.';

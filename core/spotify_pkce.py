@@ -1,9 +1,9 @@
 """Flusso Spotify "Authorization Code with PKCE" (per-utente, senza client secret).
 
 Ogni visitatore della web app accede con il PROPRIO account Spotify: l'app usa solo
-il Client ID pubblico (nessun secret, nessun server dedicato). Il token risultante
-abilita, lato browser, la ricerca dei brani, il Web Playback SDK e la creazione di
-playlist sul profilo dell'utente.
+Il Client ID pubblico (nessun secret, nessun server dedicato). Il token risultante
+abilita, lato browser, la ricerca dei brani e la creazione di playlist sul profilo
+dell'utente.
 
 Documentazione:
   https://developer.spotify.com/documentation/web-api/tutorials/code-pkce-flow
@@ -20,12 +20,9 @@ import requests
 AUTH_URL = "https://accounts.spotify.com/authorize"
 TOKEN_URL = "https://accounts.spotify.com/api/token"
 
-# Permessi: streaming (Web Playback SDK), controllo riproduzione, dati profilo,
-# e modifica playlist per "aggiungi al mio profilo".
+# Permessi minimi: dati profilo e modifica playlist per "aggiungi al mio profilo".
 SCOPES = (
-    "streaming "
-    "user-read-email user-read-private "
-    "user-read-playback-state user-modify-playback-state "
+    "user-read-private "
     "playlist-modify-public playlist-modify-private"
 )
 
@@ -53,7 +50,13 @@ def make_state() -> str:
     return secrets.token_urlsafe(24)
 
 
-def build_auth_url(client_id: str, redirect_uri: str, state: str, challenge: str) -> str:
+def build_auth_url(
+    client_id: str,
+    redirect_uri: str,
+    state: str,
+    challenge: str,
+    show_dialog: bool = True,
+) -> str:
     """Costruisce l'URL di autorizzazione verso il quale reindirizzare l'utente."""
     params = {
         "client_id": client_id,
@@ -63,6 +66,7 @@ def build_auth_url(client_id: str, redirect_uri: str, state: str, challenge: str
         "scope": SCOPES,
         "code_challenge_method": "S256",
         "code_challenge": challenge,
+        "show_dialog": "true" if show_dialog else "false",
     }
     return f"{AUTH_URL}?{urlencode(params)}"
 
