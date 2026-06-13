@@ -1578,7 +1578,7 @@ def render_example_prompts(lang_name: str = "Auto") -> None:
     st.markdown(
         '<p class="hero-sub">Music curation &amp; emotional storytelling powered by AI. '
         'Type a prompt below or pick one of these to get started.</p>',
-        unsafe_allow_html=False,
+        unsafe_allow_html=True,
     )
     st.markdown("")
     prompts = EXAMPLE_PROMPTS.get(lang_name, EXAMPLE_PROMPTS["Auto"])
