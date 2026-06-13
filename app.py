@@ -1577,7 +1577,7 @@ def render_example_prompts(lang_name: str = "Auto") -> None:
     """Renders clickable example prompt cards on the startup page."""
     st.markdown(
         '<p class="hero-sub">Music curation &amp; emotional storytelling powered by AI. '
-        'Type a prompt below — or pick one of these to get started.</p>',
+        'Type a prompt below or pick one of these to get started.</p>',
         unsafe_allow_html=True,
     )
     st.markdown("")
