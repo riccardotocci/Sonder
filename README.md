@@ -1,9 +1,9 @@
-# 😈 Empathy for the Devil
+# 💕 SONDER
 
 > Piattaforma di **curatela musicale, analisi letteraria e storytelling emotivo multilingua** — Musicathon 2026.
 
 A differenza degli algoritmi tradizionali (Spotify/Apple Music) che lavorano solo su
-metadati acustici (BPM, genere), **Empathy for the Devil** decodifica il *significato
+metadati acustici (BPM, genere), **Sonder** decodifica il *significato
 poetico profondo* dei testi, collegando brani di epoche, generi e lingue diverse sotto
 lo stesso filo conduttore narrativo (l'ombra, la redenzione, il conflitto umano).
 
