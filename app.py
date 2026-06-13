@@ -701,7 +701,7 @@ def render_spotify_login(container) -> None:
     # al redirect OAuth che azzera st.session_state.
     _stay_logged_store()[state] = stay_logged
     container.markdown(
-        f'<a href="{html.escape(auth_url)}" target="_self" rel="noopener" '
+        f'<a href="{html.escape(auth_url)}" target="_blank" rel="noopener noreferrer" '
         'style="display:block;text-align:center;padding:10px 14px;'
         'border-radius:10px;font-weight:700;text-decoration:none;'
         'color:#04150b;background:linear-gradient(100deg,#1db954,#2de26d);'
@@ -710,8 +710,8 @@ def render_spotify_login(container) -> None:
         unsafe_allow_html=True,
     )
     container.caption(
-        "Spotify login opens in this same window; you'll be brought back "
-        "here automatically when you're done."
+        "Spotify login opens in a new browser tab. After approving access, "
+        "come back here or refresh this tab."
     )
 
 
