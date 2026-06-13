@@ -1200,7 +1200,10 @@ STUDIO_HTML = """
         }
         if (!response.ok) {
             const message = spotifyApiMessage(payload, response.statusText || 'Spotify request failed');
-            throw new Error((action || 'Spotify request') + ' failed (' + response.status + '): ' + message);
+            const error = new Error((action || 'Spotify request') + ' failed (' + response.status + '): ' + message);
+            error.status = response.status;
+            error.spotifyMessage = message;
+            throw error;
         }
         return payload || {};
     }
@@ -1219,9 +1222,25 @@ STUDIO_HTML = """
         share.style.display = 'flex';
     }
 
+    async function createSpotifyPlaylist(meId, isPublic) {
+        return spotifyJson('/users/' + encodeURIComponent(meId) + '/playlists', {
+            method: 'POST',
+            body: JSON.stringify({
+                name: PLAYLIST_NAME || 'Sonder',
+                public: isPublic,
+                description: 'Curated by Sonder'
+            })
+        }, isPublic ? 'Create public Spotify playlist' : 'Create private Spotify playlist');
+    }
+
+    function isForbidden(e) {
+        const msg = String((e && e.message) || e || '');
+        return e && e.status === 403 || /\b403\b|forbidden|insufficient client scope/i.test(msg);
+    }
+
     function addPlaylistErrorMessage(e) {
         const msg = String((e && e.message) || e || 'Unknown error');
-        if (/insufficient client scope/i.test(msg)) {
+        if (/\b403\b|forbidden|insufficient client scope/i.test(msg)) {
             return 'Spotify permissions are missing. Disconnect Spotify, log in again, then retry.';
         }
         if (/401|access token|token expired|invalid token/i.test(msg)) {
@@ -1372,11 +1391,16 @@ STUDIO_HTML = """
             const me = await spotifyJson('/me', {}, 'Load Spotify profile');
             if (!me.id) throw new Error('Spotify profile response did not include a user id.');
 
-            const created = await spotifyJson('/users/' + encodeURIComponent(me.id) + '/playlists', {
-        method: 'POST',
-                body: JSON.stringify({ name: PLAYLIST_NAME || 'Sonder', public: true,
-          description: 'Curated by Sonder' })
-            }, 'Create Spotify playlist');
+            let created;
+            let createdPublic = true;
+            try {
+                created = await createSpotifyPlaylist(me.id, true);
+            } catch (e) {
+                if (!isForbidden(e)) throw e;
+                createdPublic = false;
+                setAddStatus('Spotify blocked public playlist creation. Trying private playlist…');
+                created = await createSpotifyPlaylist(me.id, false);
+            }
             if (!created.id) throw new Error('Spotify did not return the new playlist id.');
 
       const uris = [];
@@ -1397,7 +1421,9 @@ STUDIO_HTML = """
             const url = playlistUrl(created);
             showPlaylistShare(url);
             btn.textContent = 'Create another Spotify playlist';
-            setAddStatus('✓ Added to your profile (' + uris.length + ' tracks).');
+            setAddStatus(createdPublic
+                ? '✓ Added to your profile (' + uris.length + ' tracks).'
+                : '✓ Playlist created privately (' + uris.length + ' tracks). Use the Spotify link to share it.');
     } catch (e) {
             setAddStatus(addPlaylistErrorMessage(e));
             btn.textContent = originalText;
