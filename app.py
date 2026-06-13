@@ -603,8 +603,12 @@ def handle_spotify_callback() -> None:
                 "scope": token.get("scope", ""),
             }
             st.session_state["sp_token"] = tok_data
-            if _stay_logged_store().pop(state, False):
-                _persistent_token_store()["token"] = tok_data
+            # Salviamo sempre nel persistent store (vive nel processo server):
+            # così, dopo il login completato in una nuova scheda, anche la scheda
+            # originale recupera il token al refresh. "Stay logged in" resta la
+            # preferenza esplicita dell'utente.
+            _persistent_token_store()["token"] = tok_data
+            _stay_logged_store().pop(state, None)
             st.session_state.pop("sp_auth_error", None)
         except spotify_pkce.SpotifyPKCEError as exc:
             st.session_state["sp_auth_error"] = str(exc)
@@ -706,8 +710,10 @@ def render_spotify_login(container) -> None:
         state=state,
         challenge=challenge,
     )
-    # NB: Spotify Accounts rifiuta di aprirsi dentro frame/webview annidati.
-    # target="_top" forza l'OAuth nel contesto principale della pagina.
+    # NB: Spotify Accounts rifiuta di aprirsi dentro frame/webview annidati e
+    # molti ambienti (webview, preview) bloccano anche target="_top". Apriamo
+    # quindi l'OAuth in una scheda esterna (target="_blank"): il token viene
+    # salvato lato server, così la scheda originale lo riprende al refresh.
     stay_logged = container.checkbox(
         "Stay logged in",
         value=bool(_persistent_token_store().get("token") or st.session_state.get("sp_stay_logged")),
@@ -717,7 +723,7 @@ def render_spotify_login(container) -> None:
     # al redirect OAuth che azzera st.session_state.
     _stay_logged_store()[state] = stay_logged
     container.markdown(
-        f'<a href="{html.escape(auth_url)}" target="_top" rel="noopener" '
+        f'<a href="{html.escape(auth_url)}" target="_blank" rel="noopener" '
         'style="display:block;text-align:center;padding:10px 14px;'
         'border-radius:10px;font-weight:700;text-decoration:none;'
         'color:#04150b;background:linear-gradient(100deg,#1db954,#2de26d);'
@@ -725,7 +731,13 @@ def render_spotify_login(container) -> None:
         '🔑 Log in with your Spotify account</a>',
         unsafe_allow_html=True,
     )
-    container.caption("Login is required to save and share playlists on your Spotify account.")
+    container.caption(
+        "Opens Spotify in a new tab. Complete the login there, then come back "
+        "and refresh this page."
+    )
+    container.markdown(
+        f"[If nothing happens, open this Spotify login link]({auth_url})"
+    )
 
 
 # --------------------------------------------------------------------------- #
