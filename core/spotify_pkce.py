@@ -2,8 +2,7 @@
 
 Ogni visitatore della web app accede con il PROPRIO account Spotify: l'app usa solo
 Il Client ID pubblico (nessun secret, nessun server dedicato). Il token risultante
-abilita, lato browser, la ricerca dei brani e la creazione di playlist sul profilo
-dell'utente.
+abilita, lato browser, la ricerca dei brani nel catalogo Spotify.
 
 Documentazione:
   https://developer.spotify.com/documentation/web-api/tutorials/code-pkce-flow
@@ -20,11 +19,8 @@ import requests
 AUTH_URL = "https://accounts.spotify.com/authorize"
 TOKEN_URL = "https://accounts.spotify.com/api/token"
 
-# Permessi minimi: dati profilo e modifica playlist per "aggiungi al mio profilo".
-SCOPES = (
-    "user-read-private "
-    "playlist-modify-public playlist-modify-private"
-)
+# Permesso minimo: solo lettura del profilo (per la ricerca brani col token utente).
+SCOPES = "user-read-private"
 
 
 class SpotifyPKCEError(RuntimeError):

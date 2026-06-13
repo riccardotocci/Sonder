@@ -140,10 +140,6 @@ REFUSALS: dict[str, str] = {
 
 # Palette neon "studio tecnologico", ciclata per indice su pill e card.
 PALETTE = ["#ff2d78", "#f97316", "#22d3ee", "#facc15", "#c2410c", "#34d399"]
-REQUIRED_SPOTIFY_PLAYLIST_SCOPES = {
-    "playlist-modify-public",
-    "playlist-modify-private",
-}
 
 EXAMPLE_PROMPTS: dict[str, list[tuple[str, str]]] = {
     "Auto": [
@@ -649,22 +645,6 @@ def spotify_token() -> str:
     return tok.get("access_token", "")
 
 
-def granted_spotify_scopes() -> set[str]:
-    """Restituisce gli scope dichiarati dal token corrente (se presenti)."""
-    tok = st.session_state.get("sp_token") or _persistent_token_store().get("token")
-    if not isinstance(tok, dict):
-        return set()
-    return set(str(tok.get("scope", "")).split())
-
-
-def missing_spotify_playlist_scopes() -> set[str]:
-    """Restituisce gli scope playlist mancanti, se il token li dichiara."""
-    granted = granted_spotify_scopes()
-    if not granted:
-        return set()
-    return REQUIRED_SPOTIFY_PLAYLIST_SCOPES - granted
-
-
 def render_spotify_login(container) -> None:
     """Mostra in sidebar lo stato/login Spotify per-utente."""
     container.markdown("### 🎧 Spotify")
@@ -687,24 +667,6 @@ def render_spotify_login(container) -> None:
 
     if spotify_token():
         container.success("🟢 Connected to your Spotify")
-        granted = granted_spotify_scopes()
-        missing_scopes = missing_spotify_playlist_scopes()
-        if missing_scopes:
-            container.warning(
-                "Spotify did not grant playlist permissions yet. Disconnect, "
-                "then log in again and approve playlist access."
-            )
-        elif granted:
-            container.info(
-                "Playlist permissions granted. If you still get a 403 when adding "
-                "a playlist, your Spotify app is in Development Mode: add this "
-                "Spotify account under **User Management** in the Spotify Developer "
-                "Dashboard, or log in with the account that owns the app."
-            )
-        if granted:
-            with container.expander("Spotify diagnostics"):
-                st.caption("Granted scopes:")
-                st.code("\n".join(sorted(granted)) or "(none reported)")
         if container.button("Disconnect Spotify", use_container_width=True):
             st.session_state.pop("sp_token", None)
             _persistent_token_store().pop("token", None)
@@ -966,6 +928,12 @@ STUDIO_HTML = """
     font-size: .92rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   .ti-artist { color: #8f8aa8; font-size: .8rem; }
+  .ti-open {
+    flex: 0 0 auto; margin-left: auto; color: #1db954; text-decoration: none;
+    font-size: 1rem; font-weight: 700; padding: 2px 7px; border-radius: 8px;
+    opacity: .7; transition: opacity .12s ease, background .12s ease;
+  }
+  .ti-open:hover { opacity: 1; background: rgba(29,185,84,.14); }
 
   #center-empty {
     height: 100%; display: flex; align-items: center; justify-content: center;
@@ -985,29 +953,6 @@ STUDIO_HTML = """
   #c-meta { color: #8f8aa8; font-family: 'JetBrains Mono', monospace; font-size: .8rem; margin-bottom: 14px; }
   #c-speech { font-size: 1.05rem; line-height: 1.75; color: #c9c5dd; }
 
-  .addbar {
-    width: 100%; border: 0; border-radius: 12px; cursor: pointer;
-    font-family: 'Space Grotesk', sans-serif; font-weight: 700;
-    color: #04150b; background: linear-gradient(100deg, #1db954, #2de26d); padding: 10px 12px; font-size: .92rem;
-    box-shadow: 0 0 18px rgba(29,185,84,.40); margin-bottom: 8px;
-    transition: transform .15s ease, filter .15s ease;
-  }
-  .addbar:hover { transform: translateY(-1px); filter: brightness(1.06); }
-  .addbar:disabled { opacity: .6; cursor: default; transform: none; }
-  .sp-hint { color: #8f8aa8; font-size: .8rem; margin-bottom: 10px; }
-    .playlist-share {
-        display: flex; align-items: center; justify-content: center; gap: 8px;
-        flex-wrap: wrap; margin-bottom: 10px;
-    }
-    .playlist-share a,
-    .playlist-share button {
-        border: 1px solid rgba(29,185,84,.45); border-radius: 10px;
-        padding: 8px 10px; font-size: .8rem; font-weight: 700;
-    }
-    .playlist-share a { color: #1db954; text-decoration: none; }
-    .playlist-share button {
-        color: #dfffe9; background: rgba(29,185,84,.12); cursor: pointer;
-    }
   #player { text-align: center; }
   #p-msg { color: #8f8aa8; font-size: .78rem; margin-top: 10px; }
   #sp-embed {
@@ -1057,12 +1002,6 @@ STUDIO_HTML = """
     </div>
     <div class="col">
       <div class="col-h">Player</div>
-      <button id="addPlaylist" class="addbar" style="display:none">&#43; Add this playlist to your profile</button>
-      <div id="add-status" class="sp-hint"></div>
-            <div id="playlist-share" class="playlist-share" style="display:none">
-                <a id="playlist-open" target="_blank" rel="noopener">Open playlist on Spotify</a>
-                <button id="playlist-copy" type="button">Copy Spotify link</button>
-            </div>
       <div id="need-login" style="display:none">Log in to your Spotify in the sidebar to enable the player and playback.</div>
       <div id="player" style="display:none">
         <div id="p-msg">Starting player&hellip;</div>
@@ -1109,7 +1048,6 @@ STUDIO_HTML = """
   const pMsg = document.getElementById('p-msg');
 
   function setStatus(s) { statusEl.textContent = s; }
-  function setAddStatus(s) { document.getElementById('add-status').textContent = s; }
   function setPMsg(s) { pMsg.textContent = s; }
 
   function esc(s) {
@@ -1119,6 +1057,12 @@ STUDIO_HTML = """
   function spotifyTrackId(uri) {
     const m = String(uri || '').match(/spotify:track:([A-Za-z0-9]+)/);
     return m ? m[1] : '';
+  }
+
+  function trackSpotifyLink(t) {
+    const id = spotifyTrackId(t.uri);
+    if (id) return 'https://open.spotify.com/track/' + id;
+    return 'https://open.spotify.com/search/' + encodeURIComponent(((t.title || '') + ' ' + (t.artist || '')).trim());
   }
 
   function showSpotifyEmbed(uri) {
@@ -1165,13 +1109,15 @@ STUDIO_HTML = """
       '<div class="ti-body">' +
         '<div class="ti-title">' + (i+1) + '. ' + esc(t.title) + '</div>' +
         '<div class="ti-artist">' + esc(t.artist) + (t.mood ? ' &middot; ' + esc(t.mood) : '') + '</div>' +
-      '</div>';
+      '</div>' +
+      '<a class="ti-open" href="' + trackSpotifyLink(t) + '" target="_blank" rel="noopener" title="Open on Spotify">&#8599;</a>';
     row.querySelector('.ti-play').addEventListener('click', (e) => {
       e.stopPropagation(); autoSeq = false; runTrack(i, true, false);
     });
     row.querySelector('.ti-body').addEventListener('click', () => {
       autoSeq = false; stopAudio(); runTrack(i, false, false);
     });
+    row.querySelector('.ti-open').addEventListener('click', (e) => { e.stopPropagation(); });
     listEl.appendChild(row);
   });
 
@@ -1232,77 +1178,6 @@ STUDIO_HTML = """
       headers: { 'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'application/json' }
     }, opts || {}));
   }
-
-    function spotifyApiMessage(payload, fallback) {
-        if (!payload) return fallback;
-        if (typeof payload === 'string') return payload || fallback;
-        if (payload.error) {
-            if (typeof payload.error === 'string') return payload.error_description || payload.error;
-            if (payload.error.message) return payload.error.message;
-        }
-        return payload.error_description || payload.message || fallback;
-    }
-
-    async function spotifyJson(path, opts, action) {
-        const response = await api(path, opts);
-        const text = await response.text();
-        let payload = null;
-        if (text) {
-            try { payload = JSON.parse(text); } catch (e) { payload = text; }
-        }
-        if (!response.ok) {
-            const message = spotifyApiMessage(payload, response.statusText || 'Spotify request failed');
-            const error = new Error((action || 'Spotify request') + ' failed (' + response.status + '): ' + message);
-            error.status = response.status;
-            error.spotifyMessage = message;
-            throw error;
-        }
-        return payload || {};
-    }
-
-    function playlistUrl(created) {
-        if (!created) return '';
-        if (created.external_urls && created.external_urls.spotify) return created.external_urls.spotify;
-        return created.id ? 'https://open.spotify.com/playlist/' + created.id : '';
-    }
-
-    function showPlaylistShare(url) {
-        const share = document.getElementById('playlist-share');
-        const open = document.getElementById('playlist-open');
-        if (!url) { share.style.display = 'none'; return; }
-        open.href = url;
-        share.style.display = 'flex';
-    }
-
-    async function createSpotifyPlaylist(meId, isPublic) {
-        return spotifyJson('/users/' + encodeURIComponent(meId) + '/playlists', {
-            method: 'POST',
-            body: JSON.stringify({
-                name: PLAYLIST_NAME || 'Sonder',
-                public: isPublic,
-                description: 'Curated by Sonder'
-            })
-        }, isPublic ? 'Create public Spotify playlist' : 'Create private Spotify playlist');
-    }
-
-    function isForbidden(e) {
-        const msg = String((e && e.message) || e || '');
-        return e && e.status === 403 || /\b403\b|forbidden|insufficient client scope/i.test(msg);
-    }
-
-    function addPlaylistErrorMessage(e) {
-        const msg = String((e && e.message) || e || 'Unknown error');
-        if (/insufficient client scope/i.test(msg)) {
-            return 'Spotify is missing playlist permissions. Disconnect, log in again, and approve playlist access.';
-        }
-        if (/\b403\b|forbidden/i.test(msg)) {
-            return 'Spotify blocked playlist creation (403). Your Spotify app is likely in Development Mode: in the Spotify Developer Dashboard open your app → User Management and add this Spotify account (name + email), or log in with the account that owns the app. Then retry.';
-        }
-        if (/401|access token|token expired|invalid token/i.test(msg)) {
-            return 'Spotify session expired. Disconnect Spotify, log in again, then retry.';
-        }
-        return 'Error while adding: ' + msg;
-    }
 
   async function resolveUri(t) {
     if (t.uri) return t.uri;
@@ -1434,69 +1309,6 @@ STUDIO_HTML = """
     setStatus(shuffleOn ? '🔀 Shuffle on' : 'Ready');
   });
 
-  // ---- Aggiungi la playlist al profilo dell'utente ----
-  document.getElementById('addPlaylist').addEventListener('click', async () => {
-        if (!TOKEN) { setAddStatus('Log in to Spotify in the sidebar first.'); return; }
-        if (!TRACKS.length) return;
-    const btn = document.getElementById('addPlaylist');
-        const originalText = btn.textContent;
-    btn.disabled = true; setAddStatus('Creating playlist on your profile…');
-        showPlaylistShare('');
-    try {
-            const me = await spotifyJson('/me', {}, 'Load Spotify profile');
-            if (!me.id) throw new Error('Spotify profile response did not include a user id.');
-
-            let created;
-            let createdPublic = true;
-            try {
-                created = await createSpotifyPlaylist(me.id, true);
-            } catch (e) {
-                if (!isForbidden(e)) throw e;
-                createdPublic = false;
-                setAddStatus('Spotify blocked public playlist creation. Trying private playlist…');
-                created = await createSpotifyPlaylist(me.id, false);
-            }
-            if (!created.id) throw new Error('Spotify did not return the new playlist id.');
-
-      const uris = [];
-            for (let i = 0; i < TRACKS.length; i++) {
-                setAddStatus('Resolving tracks on Spotify… ' + (i + 1) + '/' + TRACKS.length);
-                const u = await resolveUri(TRACKS[i]);
-                if (u) uris.push(u);
-            }
-            if (!uris.length) throw new Error('No tracks could be resolved on Spotify.');
-
-      for (let k = 0; k < uris.length; k += 100) {
-                setAddStatus('Adding tracks to your playlist… ' + Math.min(k + 100, uris.length) + '/' + uris.length);
-                await spotifyJson('/playlists/' + encodeURIComponent(created.id) + '/tracks', {
-          method: 'POST', body: JSON.stringify({ uris: uris.slice(k, k + 100) })
-                }, 'Add tracks to Spotify playlist');
-      }
-
-            const url = playlistUrl(created);
-            showPlaylistShare(url);
-            btn.textContent = 'Create another Spotify playlist';
-            setAddStatus(createdPublic
-                ? '✓ Added to your profile (' + uris.length + ' tracks).'
-                : '✓ Playlist created privately (' + uris.length + ' tracks). Use the Spotify link to share it.');
-    } catch (e) {
-            setAddStatus(addPlaylistErrorMessage(e));
-            btn.textContent = originalText;
-    }
-    btn.disabled = false;
-  });
-
-    document.getElementById('playlist-copy').addEventListener('click', async () => {
-        const url = document.getElementById('playlist-open').href;
-        if (!url) return;
-        try {
-            await navigator.clipboard.writeText(url);
-            setAddStatus('Spotify playlist link copied.');
-        } catch (e) {
-            setAddStatus('Share link: ' + url);
-        }
-    });
-
     // ---- Spotify Embed IFrame API (player ufficiale Spotify) ----
     window.onSpotifyIframeApiReady = (IFrameAPI) => {
         const host = document.getElementById('sp-embed');
@@ -1533,11 +1345,9 @@ STUDIO_HTML = """
 
     // Stato iniziale dell'area player.
     document.getElementById('player').style.display = 'block';
-    if (TOKEN) {
-    document.getElementById('addPlaylist').style.display = 'block';
-  } else {
+    if (!TOKEN) {
         document.getElementById('need-login').style.display = 'block';
-        document.getElementById('need-login').textContent = 'Log in to your Spotify in the sidebar to resolve missing track URIs and add the playlist to your profile.';
+        document.getElementById('need-login').textContent = 'Log in to your Spotify in the sidebar to resolve missing track URIs and enable the player.';
     }
     if (TRACKS.length) {
         current = 0;
