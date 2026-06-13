@@ -706,9 +706,8 @@ def render_spotify_login(container) -> None:
         state=state,
         challenge=challenge,
     )
-    # NB: st.link_button apre in una nuova scheda; il token finirebbe nella
-    # sessione della nuova scheda lasciando quella originale non loggata.
-    # Usiamo quindi un link HTML con target="_self" (stessa scheda).
+    # NB: Spotify Accounts rifiuta di aprirsi dentro frame/webview annidati.
+    # target="_top" forza l'OAuth nel contesto principale della pagina.
     stay_logged = container.checkbox(
         "Stay logged in",
         value=bool(_persistent_token_store().get("token") or st.session_state.get("sp_stay_logged")),
@@ -718,7 +717,7 @@ def render_spotify_login(container) -> None:
     # al redirect OAuth che azzera st.session_state.
     _stay_logged_store()[state] = stay_logged
     container.markdown(
-        f'<a href="{html.escape(auth_url)}" target="_self" '
+        f'<a href="{html.escape(auth_url)}" target="_top" rel="noopener" '
         'style="display:block;text-align:center;padding:10px 14px;'
         'border-radius:10px;font-weight:700;text-decoration:none;'
         'color:#04150b;background:linear-gradient(100deg,#1db954,#2de26d);'
