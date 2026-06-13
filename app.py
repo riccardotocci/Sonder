@@ -1597,9 +1597,10 @@ def render_example_prompts(lang_name: str = "Auto") -> None:
 def main() -> None:
 
     logo_icon_solo = _logo_b64("logo_iconsolo.png")
+
     st.set_page_config(
         page_title="Sonder",
-        page_icon=f"data:image/png;base64,{logo_icon_solo}" if logo_icon_solo else None,
+        page_icon=f"data:image/png;base64,{logo_icon_solo}",
         layout="wide",
         initial_sidebar_state="expanded",
     )
