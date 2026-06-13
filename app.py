@@ -104,38 +104,38 @@ TTS_LANG: dict[str, str] = {
 # Saluto iniziale della chat per ciascuna lingua (per "Auto" usiamo un saluto bilingue).
 GREETINGS: dict[str, str] = {
     "Auto": "Hi, I'm **Sonder**. What would you like to talk about? "
-            "Feel free to write in any language and I'll reply in the same. 😈",
-    "Italiano": "Ciao, sono **Sonder**. Di cosa vuoi parlare oggi? 😈",
-    "English": "Hi, I'm **Sonder**. What would you like to talk about? 😈",
-    "Français": "Salut, je suis **Sonder**. De quoi veux-tu parler ? 😈",
-    "Español": "Hola, soy **Sonder**. ¿De qué quieres hablar? 😈",
-    "Deutsch": "Hallo, ich bin **Sonder**. Worüber möchtest du sprechen? 😈",
-    "Português": "Olá, sou **Sonder**. Sobre o que queres falar? 😈",
-    "Nederlands": "Hoi, ik ben **Sonder**. Waarover wil je praten? 😈",
-    "Polski": "Cześć, jestem **Sonder**. O czym chcesz porozmawiać? 😈",
-    "Русский": "Привет, я **Sonder**. О чём хочешь поговорить? 😈",
-    "日本語": "こんにちは、**Sonder** です。何について話したいですか？ 😈",
-    "中文": "你好，我是 **Sonder**。你想聊些什么？ 😈",
-    "한국어": "안녕하세요, 저는 **Sonder** 입니다. 무엇에 대해 이야기하고 싶으신가요? 😈",
-    "العربية": "مرحبًا، أنا **Sonder**. عن ماذا تريد أن نتحدث؟ 😈",
+            "Feel free to write in any language and I'll reply in the same. ",
+    "Italiano": "Ciao, sono **Sonder**. Di cosa vuoi parlare oggi? ",
+    "English": "Hi, I'm **Sonder**. What would you like to talk about? ",
+    "Français": "Salut, je suis **Sonder**. De quoi veux-tu parler ? ",
+    "Español": "Hola, soy **Sonder**. ¿De qué quieres hablar? ",
+    "Deutsch": "Hallo, ich bin **Sonder**. Worüber möchtest du sprechen? ",
+    "Português": "Olá, sou **Sonder**. Sobre o que queres falar? ",
+    "Nederlands": "Hoi, ik ben **Sonder**. Waarover wil je praten? ",
+    "Polski": "Cześć, jestem **Sonder**. O czym chcesz porozmawiać? ",
+    "Русский": "Привет, я **Sonder**. О чём хочешь поговорить? ",
+    "日本語": "こんにちは、**Sonder** です。何について話したいですか？ ",
+    "中文": "你好，我是 **Sonder**。你想聊些什么？ ",
+    "한국어": "안녕하세요, 저는 **Sonder** 입니다. 무엇에 대해 이야기하고 싶으신가요? ",
+    "العربية": "مرحبًا، أنا **Sonder**. عن ماذا تريد أن نتحدث؟ ",
 }
 
 # Messaggi di rifiuto in-character per argomenti fuori ambito musicale.
 REFUSALS: dict[str, str] = {
-    "Auto":     "*Questo non è il mio territorio.* Sono fatto di note, versi e ombre sonore — parlami di musica e ti seguirò ovunque. 😈",
-    "Italiano": "*Questo non è il mio territorio.* Sono fatto di note, versi e ombre sonore — parlami di musica e ti seguirò ovunque. 😈",
-    "English":  "*That's outside my domain.* I'm made of notes, lyrics and sonic shadows — bring me music and I'll follow you anywhere. 😈",
-    "Français": "*Ce n'est pas mon domaine.* Je suis fait de notes, de paroles et d'ombres sonores — parle-moi de musique et je te suivrai partout. 😈",
-    "Español":  "*Eso está fuera de mi territorio.* Estoy hecho de notas, letras y sombras sonoras — háblame de música y te seguiré a donde sea. 😈",
-    "Deutsch":  "*Das liegt außerhalb meines Gebiets.* Ich bin aus Noten, Texten und klanglichen Schatten gemacht — sprich über Musik und ich folge dir überallhin. 😈",
-    "Português":"*Isso está fora do meu território.* Sou feito de notas, letras e sombras sonoras — fala-me de música e te seguirei para onde quiseres. 😈",
-    "Nederlands":"*Dit valt buiten mijn domein.* Ik ben gemaakt van noten, teksten en klanksschaduwen — praat met me over muziek en ik volg je overal. 😈",
-    "Polski":   "*To poza moim terenem.* Jestem zbudowany z nut, tekstów i dźwiękowych cieni — porozmawiaj ze mną o muzyce, a pójdę za tobą wszędzie. 😈",
-    "Русский":  "*Это не моя территория.* Я соткан из нот, слов и звуковых теней — говори со мной о музыке, и я последую за тобой куда угодно. 😈",
-    "日本語":    "*それは私の領域外です。* 私は音符、歌詞、音の影から生まれました — 音楽について話せば、どこまでもついていきます。😈",
-    "中文":     "*这超出了我的领域。* 我由音符、歌词和声音的阴影构成——跟我谈音乐，我会陪你走遍任何地方。😈",
-    "한국어":   "*그건 제 영역 밖입니다.* 저는 음표, 가사, 음향의 그림자로 만들어졌습니다 — 음악에 대해 이야기하면 어디든 따라가겠습니다. 😈",
-    "العربية":  "*هذا خارج نطاق تخصصي.* أنا مصنوع من نوتات موسيقية وكلمات وظلال صوتية — تحدّث إليّ عن الموسيقى وسأتبعك أينما ذهبت. 😈",
+    "Auto":     "*Questo non è il mio territorio.* Sono fatto di note, versi e ombre sonore — parlami di musica e ti seguirò ovunque. ",
+    "Italiano": "*Questo non è il mio territorio.* Sono fatto di note, versi e ombre sonore — parlami di musica e ti seguirò ovunque. ",
+    "English":  "*That's outside my domain.* I'm made of notes, lyrics and sonic shadows — bring me music and I'll follow you anywhere. ",
+    "Français": "*Ce n'est pas mon domaine.* Je suis fait de notes, de paroles et d'ombres sonores — parle-moi de musique et je te suivrai partout. ",
+    "Español":  "*Eso está fuera de mi territorio.* Estoy hecho de notas, letras y sombras sonoras — háblame de música y te seguiré a donde sea. ",
+    "Deutsch":  "*Das liegt außerhalb meines Gebiets.* Ich bin aus Noten, Texten und klanglichen Schatten gemacht — sprich über Musik und ich folge dir überallhin. ",
+    "Português":"*Isso está fora do meu território.* Sou feito de notas, letras e sombras sonoras — fala-me de música e te seguirei para onde quiseres. ",
+    "Nederlands":"*Dit valt buiten mijn domein.* Ik ben gemaakt van noten, teksten en klanksschaduwen — praat met me over muziek en ik volg je overal. ",
+    "Polski":   "*To poza moim terenem.* Jestem zbudowany z nut, tekstów i dźwiękowych cieni — porozmawiaj ze mną o muzyce, a pójdę za tobą wszędzie. ",
+    "Русский":  "*Это не моя территория.* Я соткан из нот, слов и звуковых теней — говори со мной о музыке, и я последую за тобой куда угодно. ",
+    "日本語":    "*それは私の領域外です。* 私は音符、歌詞、音の影から生まれました — 音楽について話せば、どこまでもついていきます。",
+    "中文":     "*这超出了我的领域。* 我由音符、歌词和声音的阴影构成——跟我谈音乐，我会陪你走遍任何地方。",
+    "한국어":   "*그건 제 영역 밖입니다.* 저는 음표, 가사, 음향의 그림자로 만들어졌습니다 — 음악에 대해 이야기하면 어디든 따라가겠습니다.",
+    "العربية":  "*هذا خارج نطاق تخصصي.* أنا مصنوع من نوتات موسيقية وكلمات وظلال صوتية — تحدّث إليّ عن الموسيقى وسأتبعك أينما ذهبت.",
 }
 
 # Palette neon "studio tecnologico", ciclata per indice su pill e card.
@@ -1479,7 +1479,7 @@ def render_studio_sections(studio: dict) -> None:
 # --------------------------------------------------------------------------- #
 def render_message(index: int, msg: dict) -> None:
     """Renderizza un singolo messaggio della chat (con eventuale playlist)."""
-    avatar = "😈" if msg["role"] == "assistant" else None
+    avatar = "💕" if msg["role"] == "assistant" else None
     with st.chat_message(msg["role"], avatar=avatar):
         st.markdown(msg["content"])
 
@@ -1597,7 +1597,7 @@ def render_example_prompts(lang_name: str = "Auto") -> None:
 def main() -> None:
     st.set_page_config(
         page_title="Sonder",
-        page_icon="😈",
+        page_icon="💕",
         layout="wide",
         initial_sidebar_state="expanded",
     )
