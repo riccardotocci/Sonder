@@ -943,6 +943,19 @@ STUDIO_HTML = """
   .addbar:hover { transform: translateY(-1px); filter: brightness(1.06); }
   .addbar:disabled { opacity: .6; cursor: default; transform: none; }
   .sp-hint { color: #8f8aa8; font-size: .8rem; margin-bottom: 10px; }
+    .playlist-share {
+        display: flex; align-items: center; justify-content: center; gap: 8px;
+        flex-wrap: wrap; margin-bottom: 10px;
+    }
+    .playlist-share a,
+    .playlist-share button {
+        border: 1px solid rgba(29,185,84,.45); border-radius: 10px;
+        padding: 8px 10px; font-size: .8rem; font-weight: 700;
+    }
+    .playlist-share a { color: #1db954; text-decoration: none; }
+    .playlist-share button {
+        color: #dfffe9; background: rgba(29,185,84,.12); cursor: pointer;
+    }
   #player { text-align: center; }
   #p-msg { color: #8f8aa8; font-size: .78rem; margin-top: 10px; }
   #sp-embed {
@@ -994,6 +1007,10 @@ STUDIO_HTML = """
       <div class="col-h">Player</div>
       <button id="addPlaylist" class="addbar" style="display:none">&#43; Add this playlist to your profile</button>
       <div id="add-status" class="sp-hint"></div>
+            <div id="playlist-share" class="playlist-share" style="display:none">
+                <a id="playlist-open" target="_blank" rel="noopener">Open playlist on Spotify</a>
+                <button id="playlist-copy" type="button">Copy Spotify link</button>
+            </div>
       <div id="need-login" style="display:none">Log in to your Spotify in the sidebar to enable the player and playback.</div>
       <div id="player" style="display:none">
         <div id="p-msg">Starting player&hellip;</div>
@@ -1164,6 +1181,55 @@ STUDIO_HTML = """
     }, opts || {}));
   }
 
+    function spotifyApiMessage(payload, fallback) {
+        if (!payload) return fallback;
+        if (typeof payload === 'string') return payload || fallback;
+        if (payload.error) {
+            if (typeof payload.error === 'string') return payload.error_description || payload.error;
+            if (payload.error.message) return payload.error.message;
+        }
+        return payload.error_description || payload.message || fallback;
+    }
+
+    async function spotifyJson(path, opts, action) {
+        const response = await api(path, opts);
+        const text = await response.text();
+        let payload = null;
+        if (text) {
+            try { payload = JSON.parse(text); } catch (e) { payload = text; }
+        }
+        if (!response.ok) {
+            const message = spotifyApiMessage(payload, response.statusText || 'Spotify request failed');
+            throw new Error((action || 'Spotify request') + ' failed (' + response.status + '): ' + message);
+        }
+        return payload || {};
+    }
+
+    function playlistUrl(created) {
+        if (!created) return '';
+        if (created.external_urls && created.external_urls.spotify) return created.external_urls.spotify;
+        return created.id ? 'https://open.spotify.com/playlist/' + created.id : '';
+    }
+
+    function showPlaylistShare(url) {
+        const share = document.getElementById('playlist-share');
+        const open = document.getElementById('playlist-open');
+        if (!url) { share.style.display = 'none'; return; }
+        open.href = url;
+        share.style.display = 'flex';
+    }
+
+    function addPlaylistErrorMessage(e) {
+        const msg = String((e && e.message) || e || 'Unknown error');
+        if (/insufficient client scope/i.test(msg)) {
+            return 'Spotify permissions are missing. Disconnect Spotify, log in again, then retry.';
+        }
+        if (/401|access token|token expired|invalid token/i.test(msg)) {
+            return 'Spotify session expired. Disconnect Spotify, log in again, then retry.';
+        }
+        return 'Error while adding: ' + msg;
+    }
+
   async function resolveUri(t) {
     if (t.uri) return t.uri;
     if (!TOKEN) return '';
@@ -1296,29 +1362,59 @@ STUDIO_HTML = """
 
   // ---- Aggiungi la playlist al profilo dell'utente ----
   document.getElementById('addPlaylist').addEventListener('click', async () => {
-    if (!TOKEN || !TRACKS.length) return;
+        if (!TOKEN) { setAddStatus('Log in to Spotify in the sidebar first.'); return; }
+        if (!TRACKS.length) return;
     const btn = document.getElementById('addPlaylist');
+        const originalText = btn.textContent;
     btn.disabled = true; setAddStatus('Creating playlist on your profile…');
+        showPlaylistShare('');
     try {
-      const me = await (await api('/me')).json();
-      const created = await (await api('/users/' + me.id + '/playlists', {
+            const me = await spotifyJson('/me', {}, 'Load Spotify profile');
+            if (!me.id) throw new Error('Spotify profile response did not include a user id.');
+
+            const created = await spotifyJson('/users/' + encodeURIComponent(me.id) + '/playlists', {
         method: 'POST',
-        body: JSON.stringify({ name: PLAYLIST_NAME || 'Sonder', public: false,
+                body: JSON.stringify({ name: PLAYLIST_NAME || 'Sonder', public: true,
           description: 'Curated by Sonder' })
-      })).json();
+            }, 'Create Spotify playlist');
+            if (!created.id) throw new Error('Spotify did not return the new playlist id.');
+
       const uris = [];
-      for (const t of TRACKS) { const u = await resolveUri(t); if (u) uris.push(u); }
+            for (let i = 0; i < TRACKS.length; i++) {
+                setAddStatus('Resolving tracks on Spotify… ' + (i + 1) + '/' + TRACKS.length);
+                const u = await resolveUri(TRACKS[i]);
+                if (u) uris.push(u);
+            }
+            if (!uris.length) throw new Error('No tracks could be resolved on Spotify.');
+
       for (let k = 0; k < uris.length; k += 100) {
-        await api('/playlists/' + created.id + '/tracks', {
+                setAddStatus('Adding tracks to your playlist… ' + Math.min(k + 100, uris.length) + '/' + uris.length);
+                await spotifyJson('/playlists/' + encodeURIComponent(created.id) + '/tracks', {
           method: 'POST', body: JSON.stringify({ uris: uris.slice(k, k + 100) })
-        });
+                }, 'Add tracks to Spotify playlist');
       }
-      setAddStatus('✓ Added to your profile (' + uris.length + ' tracks.');
+
+            const url = playlistUrl(created);
+            showPlaylistShare(url);
+            btn.textContent = 'Create another Spotify playlist';
+            setAddStatus('✓ Added to your profile (' + uris.length + ' tracks).');
     } catch (e) {
-      setAddStatus('Error while adding: ' + e);
+            setAddStatus(addPlaylistErrorMessage(e));
+            btn.textContent = originalText;
     }
     btn.disabled = false;
   });
+
+    document.getElementById('playlist-copy').addEventListener('click', async () => {
+        const url = document.getElementById('playlist-open').href;
+        if (!url) return;
+        try {
+            await navigator.clipboard.writeText(url);
+            setAddStatus('Spotify playlist link copied.');
+        } catch (e) {
+            setAddStatus('Share link: ' + url);
+        }
+    });
 
     // ---- Spotify Embed IFrame API (player ufficiale Spotify) ----
     window.onSpotifyIframeApiReady = (IFrameAPI) => {
