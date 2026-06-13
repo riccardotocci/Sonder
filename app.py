@@ -649,15 +649,19 @@ def spotify_token() -> str:
     return tok.get("access_token", "")
 
 
-def missing_spotify_playlist_scopes() -> set[str]:
-    """Restituisce gli scope playlist mancanti, se il token li dichiara."""
+def granted_spotify_scopes() -> set[str]:
+    """Restituisce gli scope dichiarati dal token corrente (se presenti)."""
     tok = st.session_state.get("sp_token") or _persistent_token_store().get("token")
     if not isinstance(tok, dict):
         return set()
-    declared = tok.get("scope", "")
-    if not declared:
+    return set(str(tok.get("scope", "")).split())
+
+
+def missing_spotify_playlist_scopes() -> set[str]:
+    """Restituisce gli scope playlist mancanti, se il token li dichiara."""
+    granted = granted_spotify_scopes()
+    if not granted:
         return set()
-    granted = set(str(declared).split())
     return REQUIRED_SPOTIFY_PLAYLIST_SCOPES - granted
 
 
@@ -683,12 +687,24 @@ def render_spotify_login(container) -> None:
 
     if spotify_token():
         container.success("🟢 Connected to your Spotify")
+        granted = granted_spotify_scopes()
         missing_scopes = missing_spotify_playlist_scopes()
         if missing_scopes:
             container.warning(
                 "Spotify did not grant playlist permissions yet. Disconnect, "
                 "then log in again and approve playlist access."
             )
+        elif granted:
+            container.info(
+                "Playlist permissions granted. If you still get a 403 when adding "
+                "a playlist, your Spotify app is in Development Mode: add this "
+                "Spotify account under **User Management** in the Spotify Developer "
+                "Dashboard, or log in with the account that owns the app."
+            )
+        if granted:
+            with container.expander("Spotify diagnostics"):
+                st.caption("Granted scopes:")
+                st.code("\n".join(sorted(granted)) or "(none reported)")
         if container.button("Disconnect Spotify", use_container_width=True):
             st.session_state.pop("sp_token", None)
             _persistent_token_store().pop("token", None)
@@ -1276,8 +1292,11 @@ STUDIO_HTML = """
 
     function addPlaylistErrorMessage(e) {
         const msg = String((e && e.message) || e || 'Unknown error');
-        if (/\b403\b|forbidden|insufficient client scope/i.test(msg)) {
-            return 'Spotify denied playlist access (403). Disconnect, log in again, approve playlist access, then retry. If it still happens, revoke Sonder from your Spotify Apps page and log in again.';
+        if (/insufficient client scope/i.test(msg)) {
+            return 'Spotify is missing playlist permissions. Disconnect, log in again, and approve playlist access.';
+        }
+        if (/\b403\b|forbidden/i.test(msg)) {
+            return 'Spotify blocked playlist creation (403). Your Spotify app is likely in Development Mode: in the Spotify Developer Dashboard open your app → User Management and add this Spotify account (name + email), or log in with the account that owns the app. Then retry.';
         }
         if (/401|access token|token expired|invalid token/i.test(msg)) {
             return 'Spotify session expired. Disconnect Spotify, log in again, then retry.';
