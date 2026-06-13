@@ -274,7 +274,7 @@ CUSTOM_CSS = """
     }
     /* Corpo del testo: sans tecnologico */
     .stApp, .stMarkdown, p, li { font-family: 'Inter', 'Segoe UI', sans-serif; }
-    .block-container { max-width: 1180px; }
+    .block-container { max-width: 1360px; }
 
     /* Occhiello / kicker sopra il titolo */
     .hero-kicker {
@@ -701,7 +701,7 @@ def render_spotify_login(container) -> None:
     # al redirect OAuth che azzera st.session_state.
     _stay_logged_store()[state] = stay_logged
     container.markdown(
-        f'<a href="{html.escape(auth_url)}" target="_blank" rel="noopener" '
+        f'<a href="{html.escape(auth_url)}" target="_self" rel="noopener" '
         'style="display:block;text-align:center;padding:10px 14px;'
         'border-radius:10px;font-weight:700;text-decoration:none;'
         'color:#04150b;background:linear-gradient(100deg,#1db954,#2de26d);'
@@ -710,11 +710,8 @@ def render_spotify_login(container) -> None:
         unsafe_allow_html=True,
     )
     container.caption(
-        "Opens Spotify in a new tab. Complete the login there, then come back "
-        "and refresh this page."
-    )
-    container.markdown(
-        f"[If nothing happens, open this Spotify login link]({auth_url})"
+        "Spotify login opens in this same window; you'll be brought back "
+        "here automatically when you're done."
     )
 
 
@@ -890,7 +887,7 @@ STUDIO_HTML = """
 
   .cols {
     display: grid; grid-template-columns: 0.95fr 1.55fr 1.05fr; gap: 16px;
-    height: 690px;
+    height: 720px;
   }
   .col {
     background: linear-gradient(165deg, rgba(255,255,255,.05), rgba(255,255,255,.02));
@@ -965,13 +962,15 @@ STUDIO_HTML = """
   }
   #need-login { color: #8f8aa8; font-size: .9rem; padding: 12px 4px; }
 
-  /* ---- Lyrics panel ---- */
-  #lyrics-section { margin-top: 14px; }
+  /* ---- Player column + Lyrics panel ---- */
+  #player-col { display: flex; flex-direction: column; overflow: hidden; }
+  #lyrics-section { margin-top: 14px; display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
   #lyrics-box {
-    height: 200px; overflow-y: auto; padding: 10px 14px;
+    flex: 1 1 auto; min-height: 160px; overflow-y: auto; padding: 10px 14px;
     background: rgba(255,255,255,.03); border-radius: 12px;
     border: 1px solid rgba(255,255,255,.08); scroll-behavior: smooth;
   }
+  .lyr-empty { color: #6f6a85; font-size: .82rem; font-style: italic; padding: 6px; }
   .lyr-line {
     font-size: .86rem; line-height: 1.85; color: #8f8aa8;
     padding: 2px 6px; border-radius: 6px;
@@ -1000,7 +999,7 @@ STUDIO_HTML = """
         <div id="c-speech"></div>
       </div>
     </div>
-    <div class="col">
+    <div class="col" id="player-col">
       <div class="col-h">Player</div>
       <div id="need-login" style="display:none">Log in to your Spotify in the sidebar to enable the player and playback.</div>
       <div id="player" style="display:none">
@@ -1148,8 +1147,11 @@ STUDIO_HTML = """
     const t = TRACKS[i];
     const section = document.getElementById('lyrics-section');
     const box = document.getElementById('lyrics-box');
-    if (!t.lyrics || !t.lyrics.trim()) { section.style.display = 'none'; return; }
-    section.style.display = 'block';
+    section.style.display = 'flex';
+    if (!t.lyrics || !t.lyrics.trim()) {
+      box.innerHTML = '<div class="lyr-empty">Synced lyrics unavailable for this track.</div>';
+      return;
+    }
     const lines = t.lyrics.split('\\n')
       .map(l => l.trim())
       .filter(l => l && !l.startsWith('****') && !l.toLowerCase().includes('commercial use'));
@@ -1390,7 +1392,7 @@ def render_studio_component(studio: dict, tts_lang: str) -> None:
         .replace("__PLAYLIST__", playlist_name)
         .replace("__TOKEN__", token_json)
     )
-    components.html(rendered, height=820, scrolling=False)
+    components.html(rendered, height=860, scrolling=False)
 
 
 def render_studio_title(prompt: str) -> None:
