@@ -944,20 +944,6 @@ STUDIO_HTML = """
   .addbar:disabled { opacity: .6; cursor: default; transform: none; }
   .sp-hint { color: #8f8aa8; font-size: .8rem; margin-bottom: 10px; }
   #player { text-align: center; }
-  #p-art {
-    width: 150px; height: 150px; object-fit: cover; border-radius: 14px;
-    box-shadow: 0 10px 26px rgba(0,0,0,.5); border: 1px solid rgba(255,255,255,.10);
-    margin: 6px auto 10px auto; display: none;
-  }
-  #p-title { font-family: 'Space Grotesk', sans-serif; font-weight: 600; font-size: 1rem; color: #f3f1ff; }
-  #p-artist { color: #8f8aa8; font-size: .85rem; margin-bottom: 8px; }
-  .p-controls { display: flex; align-items: center; justify-content: center; gap: 12px; }
-  #p-toggle {
-    width: 46px; height: 46px; border-radius: 50%; border: 0; cursor: pointer;
-    color: #fff; font-size: 1.1rem; background: linear-gradient(100deg, #ff2d78, #f97316);
-    box-shadow: 0 0 18px rgba(255,45,120,.4);
-  }
-  #p-time { color: #8f8aa8; font-family: 'JetBrains Mono', monospace; font-size: .78rem; }
   #p-msg { color: #8f8aa8; font-size: .78rem; margin-top: 10px; }
   #sp-embed {
     width: 100%; height: 152px; border: 0; border-radius: 12px; margin-top: 12px;
@@ -1010,17 +996,8 @@ STUDIO_HTML = """
       <div id="add-status" class="sp-hint"></div>
       <div id="need-login" style="display:none">Log in to your Spotify in the sidebar to enable the player and playback.</div>
       <div id="player" style="display:none">
-        <img id="p-art"/>
-        <div id="p-title">&mdash;</div>
-        <div id="p-artist"></div>
-        <div class="p-controls">
-          <button id="p-toggle">&#9654;</button>
-          <span id="p-time">0:00</span>
-        </div>
         <div id="p-msg">Starting player&hellip;</div>
-        <iframe id="sp-embed" title="Spotify embedded player" style="display:none"
-          allow="autoplay; clipboard-write; encrypted-media; fullscreen; picture-in-picture"
-          loading="lazy"></iframe>
+                <div id="sp-embed"></div>
         <a id="p-open" target="_blank" rel="noopener">Open this track on Spotify</a>
       </div>
       <div id="lyrics-section" style="display:none;">
@@ -1037,13 +1014,17 @@ STUDIO_HTML = """
   const PLAYLIST_NAME = __PLAYLIST__;
   const PALETTE = ["#ff2d78","#f97316","#22d3ee","#facc15","#c2410c","#34d399"];
 
-  let player = null;
-  let deviceId = null;
+    let embedController = null;
+    let pendingUri = '';
+    let embedReady = false;
+    let embedPlayed = false;
+    let embedPosition = 0;
+    let embedDuration = 0;
+    let embedPaused = true;
   let currentAudio = null;
   let shuffleOn = false;
   let autoSeq = false;
   let awaitingEnd = false;
-  let playingConfirmed = false;
   let order = [];
   let seqPos = 0;
   let current = -1;
@@ -1056,9 +1037,6 @@ STUDIO_HTML = """
   const cTitle = document.getElementById('c-title');
   const cMeta = document.getElementById('c-meta');
   const cSpeech = document.getElementById('c-speech');
-  const pArt = document.getElementById('p-art');
-  const pTitle = document.getElementById('p-title');
-  const pArtist = document.getElementById('p-artist');
   const pMsg = document.getElementById('p-msg');
 
   function setStatus(s) { statusEl.textContent = s; }
@@ -1077,28 +1055,35 @@ STUDIO_HTML = """
   function showSpotifyEmbed(uri) {
     const id = spotifyTrackId(uri);
     if (!id) return;
-    const embed = document.getElementById('sp-embed');
     const open = document.getElementById('p-open');
-    embed.src = 'https://open.spotify.com/embed/track/' + id + '?utm_source=generator';
-    embed.style.display = 'block';
+        const trackUri = 'spotify:track:' + id;
+        pendingUri = trackUri;
+        if (embedController && embedReady) {
+            embedController.loadUri(trackUri);
+        }
     open.href = 'https://open.spotify.com/track/' + id;
     open.style.display = 'inline-block';
   }
 
   async function prepareTrackPlayer(i) {
     const t = TRACKS[i];
-    pTitle.textContent = t.title || '—';
-    pArtist.textContent = t.artist || '';
-    if (t.image) { pArt.src = t.image; pArt.style.display = 'block'; }
-    if (!TOKEN) return;
-    const uri = await resolveUri(t);
-    if (current !== i) return;
-    if (uri) {
-      showSpotifyEmbed(uri);
-      setPMsg(deviceId ? 'Player ready ✓' : 'Embedded player ready. Premium enables full playback controls.');
-    } else {
-      setPMsg('Track not found on Spotify.');
-    }
+        if (t.uri) {
+            showSpotifyEmbed(t.uri);
+            setPMsg(embedReady ? 'Spotify player ready ✓' : 'Loading Spotify player…');
+            return;
+        }
+        if (!TOKEN) {
+            setPMsg('Spotify URI not available for this track. Log in to resolve it automatically.');
+            return;
+        }
+        const uri = await resolveUri(t);
+        if (current !== i) return;
+        if (uri) {
+            showSpotifyEmbed(uri);
+            setPMsg(embedReady ? 'Spotify player ready ✓' : 'Loading Spotify player…');
+        } else {
+            setPMsg('Track not found on Spotify.');
+        }
   }
 
   // ---- Lista brani ----
@@ -1207,7 +1192,9 @@ STUDIO_HTML = """
       currentAudio = null;
     }
     awaitingEnd = false;
-    try { if (player) player.pause(); } catch (e) {}
+        if (embedController && embedReady) {
+            try { embedController.pause(); } catch (e) {}
+        }
   }
 
   function speak(text, audioB64, onend) {
@@ -1236,19 +1223,30 @@ STUDIO_HTML = """
   }
 
   async function startSong(i, seq) {
-    if (!TOKEN) { setStatus('Log in to Spotify to listen'); if (seq) setTimeout(advance, 1500); return; }
-    setStatus('🔎 Searching for track on Spotify…');
-    const uri = await resolveUri(TRACKS[i]);
+        const t = TRACKS[i];
+        let uri = t.uri || '';
+        if (!uri && TOKEN) {
+            setStatus('🔎 Searching for track on Spotify…');
+            uri = await resolveUri(t);
+        }
     if (!uri) { setStatus('Track not found on Spotify'); if (seq) setTimeout(advance, 1500); return; }
-    if (!deviceId) { setPMsg('Full player not ready. Use the embedded Spotify player below.'); setStatus('Embedded player ready'); if (seq) setTimeout(advance, 2500); return; }
-    playingConfirmed = false;
-    try {
-      const r = await api('/me/player/play?device_id=' + deviceId, { method: 'PUT', body: JSON.stringify({ uris: [uri] }) });
-      if (!r.ok && r.status !== 204) { setPMsg('Playback: ' + r.status + ' (Premium required?)'); }
-      setStatus('🎧 Now playing…');
-      if (seq) awaitingEnd = true;
-    } catch (e) {
-      setStatus('Playback error'); if (seq) setTimeout(advance, 1500);
+        showSpotifyEmbed(uri);
+        if (embedController && embedReady) {
+            embedPlayed = false;
+            embedPosition = 0;
+            embedDuration = 0;
+            embedPaused = true;
+            try {
+                embedController.play();
+                setStatus('🎧 Playing on Spotify embed…');
+                if (seq) awaitingEnd = true;
+            } catch (e) {
+                setStatus('Track loaded in Spotify player');
+                if (seq) setTimeout(advance, 2500);
+            }
+        } else {
+            setStatus('Track loaded in Spotify player');
+            if (seq) setTimeout(advance, 2500);
     }
   }
 
@@ -1296,10 +1294,6 @@ STUDIO_HTML = """
     setStatus(shuffleOn ? '🔀 Shuffle on' : 'Ready');
   });
 
-  document.getElementById('p-toggle').addEventListener('click', () => {
-    if (player) { try { player.togglePlay(); } catch (e) {} }
-  });
-
   // ---- Aggiungi la playlist al profilo dell'utente ----
   document.getElementById('addPlaylist').addEventListener('click', async () => {
     if (!TOKEN || !TRACKS.length) return;
@@ -1326,64 +1320,55 @@ STUDIO_HTML = """
     btn.disabled = false;
   });
 
-  // ---- Web Playback SDK (riproduzione col proprio account, Premium) ----
-  window.onSpotifyWebPlaybackSDKReady = () => {
-    if (!TOKEN) return;
-    player = new Spotify.Player({
-      name: 'Sonder',
-      getOAuthToken: cb => cb(TOKEN),
-      volume: 0.8
-    });
-    player.addListener('ready', ({ device_id }) => { deviceId = device_id; setPMsg('Player ready ✓'); });
-    player.addListener('not_ready', () => { deviceId = null; setPMsg('Player not available.'); });
-    player.addListener('initialization_error', ({ message }) => setPMsg('Init: ' + message));
-    player.addListener('authentication_error', ({ message }) => setPMsg('Authentication: ' + message));
-    player.addListener('account_error', ({ message }) => setPMsg('Account: Spotify Premium required.'));
-    player.addListener('playback_error', ({ message }) => setPMsg('Playback: ' + message));
-    player.addListener('player_state_changed', onState);
-    player.connect();
-  };
-
-  function fmt(ms) {
-    const s = Math.floor((ms || 0) / 1000);
-    return Math.floor(s / 60) + ':' + ('0' + (s % 60)).slice(-2);
-  }
+    // ---- Spotify Embed IFrame API (player ufficiale Spotify) ----
+    window.onSpotifyIframeApiReady = (IFrameAPI) => {
+        const host = document.getElementById('sp-embed');
+        if (!host) return;
+        IFrameAPI.createController(host, {
+            width: '100%',
+            height: '152',
+            uri: pendingUri || 'spotify:track:4uLU6hMCjMI75M1A2tKUQC'
+        }, (controller) => {
+            embedController = controller;
+            embedReady = true;
+            setPMsg('Spotify player ready ✓');
+            controller.addListener('playback_update', onState);
+            if (pendingUri) {
+                try { controller.loadUri(pendingUri); } catch (e) {}
+            }
+        });
+    };
 
   function onState(state) {
-    if (!state) return;
-    const cur = state.track_window.current_track;
-    if (cur) {
-      pTitle.textContent = cur.name;
-      pArtist.textContent = (cur.artists || []).map(a => a.name).join(', ');
-      const img = cur.album && cur.album.images && cur.album.images[0];
-      if (img) { pArt.src = img.url; pArt.style.display = 'block'; }
-    }
-    document.getElementById('p-toggle').innerHTML = state.paused ? '&#9654;' : '&#10073;&#10073;';
-    document.getElementById('p-time').textContent = fmt(state.position) + ' / ' + fmt(state.duration);
+        if (!state || !state.data) return;
+        const d = state.data;
+        embedPosition = typeof d.position === 'number' ? d.position : embedPosition;
+        embedDuration = typeof d.duration === 'number' ? d.duration : embedDuration;
+        embedPaused = !!d.isPaused;
+        if (!embedPaused && embedPosition > 0) embedPlayed = true;
 
-    if (current >= 0) syncLyrics(state.position, state.duration);
-    if (!state.paused && state.position > 0) playingConfirmed = true;
-    const prev = state.track_window.previous_tracks;
-    if (autoSeq && awaitingEnd && playingConfirmed && state.paused && state.position === 0 &&
-        prev && prev[0] && cur && prev[0].id === cur.id) {
-      awaitingEnd = false; advance();
-    }
+        if (current >= 0) syncLyrics(embedPosition, embedDuration);
+        if (autoSeq && awaitingEnd && embedPlayed && embedPaused && embedPosition === 0) {
+            awaitingEnd = false;
+            advance();
+        }
   }
 
-  // Stato iniziale dell'area player a seconda del login.
-  if (TOKEN) {
+    // Stato iniziale dell'area player.
     document.getElementById('player').style.display = 'block';
+    if (TOKEN) {
     document.getElementById('addPlaylist').style.display = 'block';
-    if (TRACKS.length) {
-      current = 0;
-      highlight(0);
-      showCenter(0);
-    }
   } else {
-    document.getElementById('need-login').style.display = 'block';
+        document.getElementById('need-login').style.display = 'block';
+        document.getElementById('need-login').textContent = 'Log in to your Spotify in the sidebar to resolve missing track URIs and add the playlist to your profile.';
+    }
+    if (TRACKS.length) {
+        current = 0;
+        highlight(0);
+        showCenter(0);
   }
 </script>
-<script src="https://sdk.scdn.co/spotify-player.js"></script>
+<script src="https://open.spotify.com/embed/iframe-api/v1" async></script>
 </body>
 </html>
 """
