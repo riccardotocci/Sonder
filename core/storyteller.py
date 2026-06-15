@@ -13,6 +13,7 @@ Compatibile con qualsiasi endpoint OpenAI-compatible:
 from __future__ import annotations
 
 import json
+import random
 import re
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -123,13 +124,15 @@ Messaggi:
 
 Regole:
 - Se l'utente cita titolo/artista, usa q_track e q_artist.
-- Per temi crea 4-8 query incentrate su parole/immagini del tema, NON su emozioni generiche.
-- Metti parole da testo in q_lyrics: goodbye, addio, adieu, adios, miss you, mi manchi, tu me manques, te extraño, senza di te, sin ti.
-- Usa q solo per genere/lingua/periodo. Non usare q per mood astratti.
+- Per temi crea fino a 20 query incentrate su parole/immagini del tema, NON su emozioni generiche.
+- Le query devono coprire lingue europee e asiatiche, ma ogni singola q_lyrics deve essere in una sola lingua.
+- Metti in q_lyrics frasi brevi, leggibili, anche sarcastiche/allusive: ghost of you, empty bed, thanks for nothing, grazie di niente, gracias por nada.
+- Per richieste tematiche lascia q vuoto: NON suggerire generi, stili, strumenti, tempo o estetiche sonore.
+- Usa q solo se l'utente chiede esplicitamente un genere, una lingua o un periodo storico.
 - Evita parole inutili: canzoni, brani, playlist, consigliami.
-- Evita etichette generiche: sad, emotional, melancholic, heartbreak, loss, broken heart, triste.
+- Evita etichette generiche o letterali: sad, emotional, melancholic, heartbreak, loss, broken heart, triste, goodbye, addio, adieu, adios.
 - Non inventare titoli o artisti.
-- reason: descrizione tematica profonda, 5-8 parole.
+- reason: descrizione semplice, massimo 5 parole.
 - reason NON deve citare genere, mood, emozioni generiche, strumenti o lingua.
 
 Schema:
@@ -147,7 +150,7 @@ Schema:
     }}
   ]
 }}
-Usa limit 1-10. Se non serve cercare, needs_search=false e queries=[]."""
+Usa limit 1-10 per il numero massimo di tracce finali, non per il numero di query. Se non serve cercare, needs_search=false e queries=[]."""
 
 
 MUSIXMATCH_RESPONSE_TEMPLATE = """Richiesta: {prompt}
@@ -169,9 +172,11 @@ Brani (nell'ordine):
 {tracks}
 
 Per ogni brano scrivi DUE parti separate in {language}:
-- musixmatch_speech: 25-40 parole basate solo su testo/richsync Musixmatch e motivo ricerca.
-- audiodb_speech: 25-40 parole basate solo su TheAudioDB/biografia/metadati.
+- musixmatch_speech: 25-40 parole basate solo sul testo/richsync e sul motivo ricerca.
+- audiodb_speech: 25-40 parole basate su contesto esterno ordinato così: prima notizie specifiche/curiosità sul brano, poi notizie sull'album, poi descrizione dell'artista.
 Non mescolare le fonti. Non inventare.
+Non scrivere mai i nomi delle fonti dentro i testi generati.
+Per audiodb_speech usa il primo livello disponibile nell'ordine indicato; non partire dall'artista se esistono dettagli sul brano o sull'album.
 
 Rispondi SOLO JSON valido:
 {{
@@ -225,24 +230,138 @@ THEME_QUERY_BANK: tuple[tuple[set[str], list[dict[str, str]]], ...] = (
             "saudade",
         },
         [
-            {"lang": "EN", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "goodbye", "reason": "congedo detto prima del vuoto"},
-            {"lang": "EN", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "miss you", "reason": "assenza che abita il presente"},
-            {"lang": "EN", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "without you", "reason": "identità ridotta dal distacco"},
-            {"lang": "IT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "addio", "reason": "soglia chiusa senza ritorno"},
-            {"lang": "IT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "mi manchi", "reason": "nome invocato nello spazio vuoto"},
-            {"lang": "IT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "senza di te", "reason": "vita ridefinita dalla sottrazione"},
-            {"lang": "FR", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "adieu", "reason": "separazione trasformata in destino"},
-            {"lang": "FR", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "tu me manques", "reason": "il tu resta come mancanza"},
-            {"lang": "FR", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "sans toi", "reason": "mondo privato del suo centro"},
-            {"lang": "ES", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "adios", "reason": "porta chiusa sul passato condiviso"},
-            {"lang": "ES", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "te extraño", "reason": "distanza che continua a chiamare"},
-            {"lang": "ES", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "sin ti", "reason": "io incompleto senza il tu"},
-            {"lang": "DE", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "auf wiedersehen", "reason": "promessa fragile dentro il congedo"},
-            {"lang": "DE", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "ich vermisse dich", "reason": "assenza misurata nel quotidiano"},
-            {"lang": "DE", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "ohne dich", "reason": "presenza cancellata dalla frase"},
-            {"lang": "PT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "adeus", "reason": "partenza senza data di ritorno"},
-            {"lang": "PT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "saudade", "reason": "memoria che sostituisce la presenza"},
-            {"lang": "PT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "sem você", "reason": "quotidiano svuotato dal pronome"},
+            {"cluster": "afterimage", "lang": "EN", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "ghost of you", "reason": "presence after goodbye"},
+            {"cluster": "abandonment", "lang": "EN", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "left behind", "reason": "someone stays alone"},
+            {"cluster": "remains", "lang": "EN", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "all that remains", "reason": "love as remains"},
+            {"cluster": "room", "lang": "EN", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "empty bed", "reason": "room after absence"},
+            {"cluster": "attachment", "lang": "EN", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "can't let go", "reason": "not letting go"},
+            {"cluster": "return", "lang": "EN", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "come back to me", "reason": "wanting return"},
+            {"cluster": "cold", "lang": "EN", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "love went cold", "reason": "love turning cold"},
+            {"cluster": "memory", "lang": "EN", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "old memories", "reason": "memory stays"},
+            {"cluster": "promise", "lang": "EN", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "broken promises", "reason": "promise breaks"},
+            {"cluster": "empty", "lang": "EN", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "nothing left", "reason": "after the ending"},
+            {"cluster": "sarcasm", "lang": "EN", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "thanks for nothing", "reason": "bitter goodbye"},
+            {"cluster": "mask", "lang": "EN", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "happy now", "reason": "bitter question"},
+            {"cluster": "afterimage", "lang": "IT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "vuoto ombra fantasma", "reason": "assenza trasformata in spazio interiore"},
+            {"cluster": "abandonment", "lang": "IT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "abbandono lasciato indietro", "reason": "identità ferma dopo l'abbandono"},
+            {"cluster": "remains", "lang": "IT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "quel che resta", "reason": "amore come resto"},
+            {"cluster": "room", "lang": "IT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "letto vuoto", "reason": "stanza dopo assenza"},
+            {"cluster": "attachment", "lang": "IT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "non so lasciarti", "reason": "legame non chiuso"},
+            {"cluster": "return", "lang": "IT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "torna da me", "reason": "desiderio di ritorno"},
+            {"cluster": "cold", "lang": "IT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "amore freddo", "reason": "amore diventato distanza"},
+            {"cluster": "memory", "lang": "IT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "vecchi ricordi", "reason": "memoria che resta"},
+            {"cluster": "promise", "lang": "IT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "promesse rotte", "reason": "promessa spezzata"},
+            {"cluster": "empty", "lang": "IT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "non resta niente", "reason": "dopo la fine"},
+            {"cluster": "sarcasm", "lang": "IT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "grazie di niente", "reason": "addio amaro"},
+            {"cluster": "mask", "lang": "IT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "contento adesso", "reason": "domanda amara"},
+            {"cluster": "afterimage", "lang": "ES", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "tu fantasma", "reason": "presencia perdida"},
+            {"cluster": "abandonment", "lang": "ES", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "me dejaste atrás", "reason": "abandono directo"},
+            {"cluster": "remains", "lang": "ES", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "restos cenizas ruinas", "reason": "l'amato sopravvive nei resti"},
+            {"cluster": "room", "lang": "ES", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "cama vacía casa vacía", "reason": "intimità sostituita dal vuoto"},
+            {"cluster": "attachment", "lang": "ES", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "olvidarte borrarte soltar", "reason": "memoria più forte della chiusura"},
+            {"cluster": "return", "lang": "ES", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "vuelve regresa puerta", "reason": "desiderio che nega la perdita"},
+            {"cluster": "sarcasm", "lang": "ES", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "gracias por nada", "reason": "despedida amarga"},
+            {"cluster": "mask", "lang": "ES", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "feliz ahora", "reason": "pregunta amarga"},
+            {"cluster": "afterimage", "lang": "FR", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "fantôme ombre absence", "reason": "il tu ritorna come ombra"},
+            {"cluster": "abandonment", "lang": "FR", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "tu m'as laissé", "reason": "abandon direct"},
+            {"cluster": "room", "lang": "FR", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "maison vide lit froid", "reason": "casa svuotata dalla separazione"},
+            {"cluster": "attachment", "lang": "FR", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "oublier effacer retenir", "reason": "ricordo che rifiuta oblio"},
+            {"cluster": "return", "lang": "FR", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "reviens retour seuil", "reason": "richiamo rivolto all'irreparabile"},
+            {"cluster": "sarcasm", "lang": "FR", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "merci pour rien", "reason": "adieu amer"},
+            {"cluster": "afterimage", "lang": "DE", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "schatten geist erinnerung", "reason": "amore rimasto come ombra"},
+            {"cluster": "abandonment", "lang": "DE", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "du lässt mich zurück", "reason": "verlassen werden"},
+            {"cluster": "attachment", "lang": "DE", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "vergessen loslassen löschen", "reason": "oblio impossibile dopo il distacco"},
+            {"cluster": "room", "lang": "DE", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "leeres haus kaltes bett", "reason": "luogo abitato solo dall'assenza"},
+            {"cluster": "sarcasm", "lang": "DE", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "danke für nichts", "reason": "bitterer abschied"},
+            {"cluster": "afterimage", "lang": "PT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "fantasma sombra saudade", "reason": "presenza perduta che continua"},
+            {"cluster": "abandonment", "lang": "PT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "me deixou pra trás", "reason": "abandono direto"},
+            {"cluster": "remains", "lang": "PT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "restou cinzas ruínas", "reason": "rovine emotive dopo l'amore"},
+            {"cluster": "attachment", "lang": "PT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "esquecer apagar soltar", "reason": "memoria che non arretra"},
+            {"cluster": "sarcasm", "lang": "PT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "obrigado por nada", "reason": "adeus amargo"},
+            {"cluster": "afterimage", "lang": "JA", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "君の影", "reason": "残る影"},
+            {"cluster": "room", "lang": "JA", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "空のベッド", "reason": "空いた場所"},
+            {"cluster": "empty", "lang": "JA", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "何も残らない", "reason": "終わりの後"},
+            {"cluster": "sarcasm", "lang": "JA", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "ありがとう何もない", "reason": "苦い皮肉"},
+            {"cluster": "afterimage", "lang": "KO", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "너의 그림자", "reason": "남은 그림자"},
+            {"cluster": "room", "lang": "KO", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "빈 침대", "reason": "비어 있는 자리"},
+            {"cluster": "empty", "lang": "KO", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "남은 건 없어", "reason": "끝난 뒤"},
+            {"cluster": "sarcasm", "lang": "KO", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "고마워 아무것도", "reason": "쓴 농담"},
+            {"cluster": "afterimage", "lang": "ZH", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "你的影子", "reason": "留下的影子"},
+            {"cluster": "room", "lang": "ZH", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "空的床", "reason": "空出的位置"},
+            {"cluster": "empty", "lang": "ZH", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "什么都不剩", "reason": "结束之后"},
+            {"cluster": "sarcasm", "lang": "ZH", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "谢谢你什么都没有", "reason": "苦涩反话"},
+            {"cluster": "afterimage", "lang": "HI", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "तेरी परछाई", "reason": "बची छाया"},
+            {"cluster": "room", "lang": "HI", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "खाली बिस्तर", "reason": "खाली जगह"},
+            {"cluster": "empty", "lang": "HI", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "कुछ नहीं बचा", "reason": "अंत के बाद"},
+            {"cluster": "sarcasm", "lang": "HI", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "धन्यवाद कुछ नहीं", "reason": "कड़वा व्यंग्य"},
+        ],
+    ),
+    (
+        {
+            "3am",
+            "3 am",
+            "three am",
+            "late night loneliness",
+            "midnight loneliness",
+            "night loneliness",
+            "lonely night",
+            "solitudine notturna",
+            "notte solitaria",
+        },
+        [
+            {"cluster": "hour", "lang": "EN", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "three in the morning", "reason": "awake too late"},
+            {"cluster": "room", "lang": "EN", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "alone at night", "reason": "alone at night"},
+            {"cluster": "city", "lang": "EN", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "empty streets", "reason": "empty city"},
+            {"cluster": "body", "lang": "EN", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "can't sleep", "reason": "can't sleep"},
+            {"cluster": "echo", "lang": "EN", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "silent room", "reason": "quiet room"},
+            {"cluster": "phone", "lang": "EN", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "phone won't ring", "reason": "no call"},
+            {"cluster": "light", "lang": "EN", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "blue light", "reason": "screen light"},
+            {"cluster": "awake", "lang": "EN", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "wide awake", "reason": "still awake"},
+            {"cluster": "bed", "lang": "EN", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "cold bed", "reason": "cold bed"},
+            {"cluster": "call", "lang": "EN", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "no one calls", "reason": "no one calls"},
+            {"cluster": "sarcasm", "lang": "EN", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "party for one", "reason": "lonely joke"},
+            {"cluster": "ceiling", "lang": "EN", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "talking to the ceiling", "reason": "ceiling as witness"},
+            {"cluster": "hour", "lang": "IT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "tre di notte soffitto", "reason": "veglia fissata nel vuoto"},
+            {"cluster": "room", "lang": "IT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "stanza muta luce blu", "reason": "intimità illuminata dal silenzio"},
+            {"cluster": "city", "lang": "IT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "strade vuote", "reason": "città senza approdo"},
+            {"cluster": "body", "lang": "IT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "non dormo", "reason": "veglia senza riposo"},
+            {"cluster": "echo", "lang": "IT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "stanza silenziosa", "reason": "silenzio intorno"},
+            {"cluster": "phone", "lang": "IT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "telefono non suona", "reason": "attesa senza voce"},
+            {"cluster": "light", "lang": "IT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "luce blu", "reason": "luce dello schermo"},
+            {"cluster": "awake", "lang": "IT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "ancora sveglio", "reason": "notte ancora aperta"},
+            {"cluster": "bed", "lang": "IT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "letto freddo", "reason": "letto senza calore"},
+            {"cluster": "call", "lang": "IT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "nessuno chiama", "reason": "nessun segnale"},
+            {"cluster": "sarcasm", "lang": "IT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "festa per nessuno", "reason": "ironia solitaria"},
+            {"cluster": "ceiling", "lang": "IT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "parlo al soffitto", "reason": "soffitto testimone"},
+            {"cluster": "city", "lang": "ES", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "calles vacías lluvia neón", "reason": "notte urbana senza approdo"},
+            {"cluster": "hour", "lang": "ES", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "tres de la mañana", "reason": "hora vacía"},
+            {"cluster": "room", "lang": "ES", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "solo en la noche", "reason": "noche sola"},
+            {"cluster": "sarcasm", "lang": "ES", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "fiesta para nadie", "reason": "ironía sola"},
+            {"cluster": "body", "lang": "FR", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "yeux ouverts nuit blanche", "reason": "insonnia come stanza interiore"},
+            {"cluster": "hour", "lang": "FR", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "trois heures du matin", "reason": "heure vide"},
+            {"cluster": "sarcasm", "lang": "FR", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "fête pour personne", "reason": "ironie seule"},
+            {"cluster": "echo", "lang": "DE", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "echo im flur", "reason": "corridoio che restituisce assenza"},
+            {"cluster": "hour", "lang": "DE", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "drei uhr morgens", "reason": "leere stunde"},
+            {"cluster": "sarcasm", "lang": "DE", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "feier für niemand", "reason": "einsame ironie"},
+            {"cluster": "phone", "lang": "PT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "telefone não toca", "reason": "silenzio dove attendevi voce"},
+            {"cluster": "hour", "lang": "PT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "três da manhã", "reason": "hora vazia"},
+            {"cluster": "sarcasm", "lang": "PT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "festa para ninguém", "reason": "ironia solitária"},
+            {"cluster": "hour", "lang": "JA", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "午前三時", "reason": "空いた時間"},
+            {"cluster": "room", "lang": "JA", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "ひとりの夜", "reason": "夜の孤独"},
+            {"cluster": "body", "lang": "JA", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "眠れない夜", "reason": "眠れない"},
+            {"cluster": "sarcasm", "lang": "JA", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "天井と話す", "reason": "皮肉な相手"},
+            {"cluster": "hour", "lang": "KO", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "새벽 세 시", "reason": "빈 시간"},
+            {"cluster": "room", "lang": "KO", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "혼자인 밤", "reason": "혼자 남은 밤"},
+            {"cluster": "body", "lang": "KO", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "잠 못 드는 밤", "reason": "잠 없는 밤"},
+            {"cluster": "sarcasm", "lang": "KO", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "혼자만의 파티", "reason": "외로운 농담"},
+            {"cluster": "hour", "lang": "ZH", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "凌晨三点", "reason": "空的时刻"},
+            {"cluster": "room", "lang": "ZH", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "一个人的夜", "reason": "独自的夜"},
+            {"cluster": "body", "lang": "ZH", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "睡不着", "reason": "无法入睡"},
+            {"cluster": "sarcasm", "lang": "ZH", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "一个人的派对", "reason": "孤独玩笑"},
+            {"cluster": "hour", "lang": "HI", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "रात के तीन बजे", "reason": "खाली समय"},
+            {"cluster": "room", "lang": "HI", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "अकेली रात", "reason": "अकेली रात"},
+            {"cluster": "body", "lang": "HI", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "नींद नहीं आती", "reason": "नींद नहीं"},
+            {"cluster": "sarcasm", "lang": "HI", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "अकेले की पार्टी", "reason": "अकेला व्यंग्य"},
         ],
     ),
 )
@@ -261,6 +380,28 @@ GENERIC_THEME_TERMS = {
     "malinconico",
     "cuore spezzato",
     "perdita",
+}
+
+GENRE_STYLE_TERMS = {
+    "acoustic",
+    "ambient",
+    "bedroom pop",
+    "dream pop",
+    "electronic",
+    "folk",
+    "genre",
+    "genere",
+    "guitar",
+    "indie",
+    "instrumental",
+    "lo-fi",
+    "lofi",
+    "minimal",
+    "nocturne",
+    "piano",
+    "slow tempo",
+    "synth",
+    "texture",
 }
 
 CONCRETE_THEME_TERMS = {
@@ -287,9 +428,79 @@ CONCRETE_THEME_TERMS = {
     "adeus",
     "saudade",
     "sem você",
+    "ghost of you",
+    "left behind",
+    "all that remains",
+    "empty side of the bed",
+    "can't let go",
+    "come back to me",
+    "love went cold",
+    "mi resta il vuoto",
+    "lasciato indietro",
+    "lo que queda de ti",
+    "cama vacía",
+    "no puedo olvidarte",
+    "vuelve a mí",
+    "ton fantôme",
+    "maison vide",
+    "je n'oublie pas",
+    "reviens vers moi",
+    "dein schatten",
+    "ich kann dich nicht vergessen",
+    "leeres haus",
+    "teu fantasma",
+    "o que restou",
+    "não te esqueci",
 }
 
-THEME_QUERY_LANGUAGE_ORDER = ("EN", "IT", "FR", "ES", "DE", "PT")
+SHALLOW_THEME_TERMS = {
+    "goodbye",
+    "miss you",
+    "without you",
+    "addio",
+    "mi manchi",
+    "senza di te",
+    "adieu",
+    "tu me manques",
+    "sans toi",
+    "adios",
+    "adiós",
+    "te extraño",
+    "sin ti",
+    "auf wiedersehen",
+    "ich vermisse dich",
+    "ohne dich",
+    "adeus",
+    "sem você",
+}
+
+THEME_QUERY_LANGUAGE_ORDER = ("EN", "IT", "FR", "ES", "DE", "PT", "JA", "KO", "ZH", "HI")
+EUROPEAN_QUERY_LANGS = {"EN", "IT", "FR", "ES", "DE", "PT"}
+ASIAN_QUERY_LANGS = {"JA", "KO", "ZH", "HI"}
+THEME_QUERY_CLUSTER_ORDER = (
+    "afterimage",
+    "hour",
+    "sarcasm",
+    "mask",
+    "room",
+    "abandonment",
+    "remains",
+    "city",
+    "body",
+    "attachment",
+    "return",
+    "echo",
+    "phone",
+    "cold",
+    "memory",
+    "promise",
+    "empty",
+    "ceiling",
+    "light",
+    "awake",
+    "bed",
+    "call",
+)
 
 
 def _theme_queries_for_text(text: str) -> list[dict[str, str]]:
@@ -298,26 +509,57 @@ def _theme_queries_for_text(text: str) -> list[dict[str, str]]:
     for triggers, bank in THEME_QUERY_BANK:
         if any(trigger in normalized for trigger in triggers):
             queries.extend(dict(item) for item in bank)
-    by_language: dict[str, list[dict[str, str]]] = {lang: [] for lang in THEME_QUERY_LANGUAGE_ORDER}
+    cluster_order: list[str] = []
     for query in queries:
-        language = str(query.get("lang", "")).upper()
-        by_language.setdefault(language, []).append(query)
+        cluster = str(query.get("cluster", "")).lower()
+        if cluster and cluster not in cluster_order:
+            cluster_order.append(cluster)
+    if not cluster_order:
+        cluster_order = list(THEME_QUERY_CLUSTER_ORDER)
+    else:
+        priority = {cluster: index for index, cluster in enumerate(THEME_QUERY_CLUSTER_ORDER)}
+        cluster_order.sort(key=lambda cluster: priority.get(cluster, len(priority)))
 
-    spread: list[dict[str, str]] = []
+    by_cluster_language: dict[tuple[str, str], list[dict[str, str]]] = {}
+    for query in queries:
+        cluster = str(query.get("cluster", "")).lower()
+        language = str(query.get("lang", "")).upper()
+        by_cluster_language.setdefault((cluster, language), []).append(query)
+
+    rng = random.SystemRandom()
+    languages = list(THEME_QUERY_LANGUAGE_ORDER)
+    rng.shuffle(languages)
+    rng.shuffle(cluster_order)
+
+    candidates: list[dict[str, str]] = []
     index = 0
-    while len(spread) < 10:
+    while True:
         added = False
-        for language in THEME_QUERY_LANGUAGE_ORDER:
-            bucket = by_language.get(language, [])
-            if index < len(bucket):
-                spread.append(bucket[index])
-                added = True
-                if len(spread) >= 10:
-                    break
+        for language in languages:
+            shuffled_clusters = list(cluster_order)
+            rng.shuffle(shuffled_clusters)
+            for cluster in shuffled_clusters:
+                bucket = by_cluster_language.get((cluster, language), [])
+                if index < len(bucket):
+                    candidates.append(bucket[index])
+                    added = True
         if not added:
             break
         index += 1
-    return spread
+
+    european = [query for query in candidates if str(query.get("lang", "")).upper() in EUROPEAN_QUERY_LANGS]
+    asian = [query for query in candidates if str(query.get("lang", "")).upper() in ASIAN_QUERY_LANGS]
+    rng.shuffle(european)
+    rng.shuffle(asian)
+
+    mixed: list[dict[str, str]] = []
+    while len(mixed) < 20 and (european or asian):
+        pools = [pool for pool in (european, asian) if pool]
+        rng.shuffle(pools)
+        for pool in pools:
+            if pool and len(mixed) < 20:
+                mixed.append(pool.pop())
+    return mixed
 
 
 def _query_text(query: dict[str, str]) -> str:
@@ -328,6 +570,10 @@ def _is_generic_theme_query(query: dict[str, str]) -> bool:
     text = _query_text(query)
     if not text:
         return False
+    if any(term in text for term in GENRE_STYLE_TERMS):
+        return True
+    if any(term in text for term in SHALLOW_THEME_TERMS):
+        return True
     if any(term in text for term in CONCRETE_THEME_TERMS):
         return False
     return any(term in text for term in GENERIC_THEME_TERMS)
@@ -354,11 +600,13 @@ class Storyteller:
         base_url: Optional[str] = None,
         model: Optional[str] = None,
         temperature: float = 0.85,
+        timeout: Optional[float] = None,
     ) -> None:
         self.api_key = api_key if api_key is not None else settings.llm_api_key
         self.base_url = base_url or settings.llm_base_url
         self.model = model or settings.llm_model
         self.temperature = temperature
+        self.timeout = timeout if timeout is not None else settings.llm_timeout_seconds
         self._client: Optional[OpenAI] = None
 
     @property
@@ -368,7 +616,11 @@ class Storyteller:
                 "Chiave API LLM mancante. Imposta LLM_API_KEY (e LLM_BASE_URL/LLM_MODEL) nel file .env"
             )
         if self._client is None:
-            self._client = OpenAI(api_key=self.api_key, base_url=self.base_url or None)
+            self._client = OpenAI(
+                api_key=self.api_key,
+                base_url=self.base_url or None,
+                timeout=self.timeout,
+            )
         return self._client
 
     # ------------------------------------------------------------------ #
@@ -439,19 +691,28 @@ class Storyteller:
             line = f'{i + 1}. "{t.get("title", "")}" — {t.get("artist", "")}'
             bio = (t.get("_bio") or t.get("bio") or "").strip()
             lyrics = (t.get("lyrics") or "").strip()
-            if bio:
-                bio_short = bio[:180] + ("…" if len(bio) > 180 else "")
-                line += f'\n   TheAudioDB bio: {bio_short}'
             if lyrics:
                 lyrics_short = lyrics[:180] + ("…" if len(lyrics) > 180 else "")
                 line += f'\n   Musixmatch testo: {lyrics_short}'
+            song_news = (t.get("audio_db_song_news") or "").strip()
+            album_news = (t.get("audio_db_album_news") or "").strip()
+            artist_description = (t.get("audio_db_artist_description") or bio).strip()
+            if song_news:
+                song_short = song_news[:260] + ("…" if len(song_news) > 260 else "")
+                line += f'\n   Contesto esterno 1 - brano: {song_short}'
+            if album_news:
+                album_short = album_news[:220] + ("…" if len(album_news) > 220 else "")
+                line += f'\n   Contesto esterno 2 - album: {album_short}'
+            if artist_description:
+                artist_short = artist_description[:180] + ("…" if len(artist_description) > 180 else "")
+                line += f'\n   Contesto esterno 3 - artista: {artist_short}'
             audiodb_text = (t.get("audio_db_text") or t.get("audiodb_text") or "").strip()
-            if audiodb_text:
+            if audiodb_text and not (song_news or album_news or artist_description):
                 audiodb_short = audiodb_text[:240] + ("…" if len(audiodb_text) > 240 else "")
-                line += f'\n   TheAudioDB contesto: {audiodb_short}'
+                line += f'\n   Contesto esterno ordinato: {audiodb_short}'
             fact = (t.get("audio_db_fact") or t.get("audiodb_fact") or "").strip()
-            if fact and fact != audiodb_text:
-                line += f'\n   TheAudioDB nota: {fact}'
+            if fact and fact != audiodb_text and not song_news:
+                line += f'\n   Nota brano/album: {fact}'
             track_parts.append(line)
         track_lines = "\n\n".join(track_parts)
         user = STUDIO_BRIEF_TEMPLATE.format(
@@ -490,18 +751,22 @@ class Storyteller:
             context=context.strip() or "(nessuno)",
             messages=json.dumps(recent, ensure_ascii=False, indent=2),
         )
-        content, _ = self._chat(
-            system="Sei un router di ricerca musicale. Rispondi esclusivamente con JSON valido.",
-            user=user,
-        )
-        data = self._parse_json(content)
+        try:
+            content, _ = self._chat(
+                system="Sei un router di ricerca musicale. Rispondi esclusivamente con JSON valido.",
+                user=user,
+            )
+            data = self._parse_json(content)
+        except StorytellerError as exc:
+            return self._fallback_musixmatch_plan(
+                last_user,
+                reason=f"LLM router unavailable for {self.model}: {exc}",
+            )
         if not data:
-            return {
-                "music_related": True,
-                "needs_search": True,
-                "limit": 10,
-                "queries": [{"q": last_user, "q_track": "", "q_artist": "", "q_lyrics": "", "reason": ""}],
-            }
+            return self._fallback_musixmatch_plan(
+                last_user,
+                reason=f"LLM router returned non-JSON output for {self.model}.",
+            )
         def as_bool(value: Any, default: bool) -> bool:
             if isinstance(value, bool):
                 return value
@@ -537,15 +802,35 @@ class Storyteller:
         has_explicit_track = any(query.get("q_track") or query.get("q_artist") for query in queries)
         theme_queries = _theme_queries_for_text(last_user)
         if theme_queries and not has_explicit_track:
-            concrete_queries = [query for query in queries if not _is_generic_theme_query(query)]
-            queries = _dedupe_queries(theme_queries + concrete_queries)
+            queries = _dedupe_queries(theme_queries)
+            limit = 10
         else:
             queries = _dedupe_queries(queries)
         return {
             "music_related": as_bool(data.get("music_related"), True),
             "needs_search": as_bool(data.get("needs_search"), True),
             "limit": limit,
-            "queries": queries[:10],
+            "queries": queries[:20],
+        }
+
+    def _fallback_musixmatch_plan(self, last_user: str, reason: str = "") -> dict[str, Any]:
+        queries = _theme_queries_for_text(last_user)
+        if not queries and last_user:
+            queries = [
+                {
+                    "q": last_user,
+                    "q_track": "",
+                    "q_artist": "",
+                    "q_lyrics": "",
+                    "reason": "fallback dalla richiesta utente",
+                }
+            ]
+        return {
+            "music_related": True,
+            "needs_search": bool(queries),
+            "limit": 10,
+            "queries": _dedupe_queries(queries)[:20],
+            "_router_fallback": reason or "Used local Musixmatch query fallback.",
         }
 
     def compose_musixmatch_response(
@@ -723,6 +1008,7 @@ class Storyteller:
                 model=self.model,
                 messages=messages,
                 temperature=self.temperature,
+                timeout=self.timeout,
             )
         except StorytellerError:
             raise
@@ -733,6 +1019,7 @@ class Storyteller:
                     response = self.client.chat.completions.create(
                         model=self.model,
                         messages=messages,
+                        timeout=self.timeout,
                     )
                 except Exception as exc2:  # noqa: BLE001
                     raise StorytellerError(f"Errore LLM: {exc2}") from exc2

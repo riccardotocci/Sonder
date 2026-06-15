@@ -18,6 +18,7 @@ load_dotenv()
 LLM_MODEL_OPTIONS: tuple[tuple[str, str], ...] = (
     ("Gemma", "google/gemma-4-31b-it:free"),
     ("Nemotron 3 Ultra", "nvidia/nemotron-3-ultra-550b-a55b:free"),
+    ("Nemotron 3 Super", "nvidia/nemotron-3-super-120b-a12b:free"),
     ("Owl Alpha", "openrouter/owl-alpha"),
     ("Nex N2 Pro", "nex-agi/nex-n2-pro:free"),
     ("GPT OSS 120B", "openai/gpt-oss-120b:free"),
@@ -29,6 +30,14 @@ def _env(key: str, default: str = "") -> str:
     """Legge una variabile d'ambiente restituendo sempre una stringa pulita."""
     value = os.getenv(key, default)
     return (value or default).strip()
+
+
+def _env_float(key: str, default: float) -> float:
+    value = _env(key, str(default))
+    try:
+        return float(value)
+    except ValueError:
+        return default
 
 
 @dataclass(frozen=True)
@@ -54,6 +63,9 @@ class Settings:
     )
     llm_model: str = field(
         default_factory=lambda: _env("LLM_MODEL", DEFAULT_LLM_MODEL)
+    )
+    llm_timeout_seconds: float = field(
+        default_factory=lambda: _env_float("LLM_TIMEOUT_SECONDS", 20.0)
     )
 
     # --- ElevenLabs TTS ---

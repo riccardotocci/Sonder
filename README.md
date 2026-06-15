@@ -26,7 +26,7 @@ lo stesso filo conduttore narrativo (l'ombra, la redenzione, il conflitto umano)
 | Backend / logica | Python 3.10+ |
 | Catalogo & testi | API Musixmatch |
 | Biografie & media | API TheAudioDB |
-| Motore di ragionamento | LLM OpenAI-compatible selezionabile dalla sidebar (Gemma, Nemotron, Owl Alpha, Nex N2 Pro, GPT OSS 120B) |
+| Motore di ragionamento | LLM OpenAI-compatible selezionabile dalla sidebar (Gemma, Nemotron Ultra/Super, Owl Alpha, Nex N2 Pro, GPT OSS 120B) |
 | Voce narrante | ElevenLabs TTS (MP3 generati lato server on-demand) |
 | Automazione musicale | API Spotify (spotipy) |
 

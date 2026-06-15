@@ -7,7 +7,6 @@ La chiave di test gratuita v1 e' "123" (endpoint pubblico, rate-limited).
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Any, Optional, Union
 
 import requests
@@ -51,22 +50,37 @@ class AudioDBError(RuntimeError):
     """Errore generico durante una chiamata a TheAudioDB."""
 
 
-@dataclass
 class Artist:
     """Profilo artista normalizzato."""
 
-    id: str = ""
-    name: str = ""
-    genre: str = ""
-    style: str = ""
-    country: str = ""
-    formed_year: str = ""
-    website: str = ""
-    thumb_url: str = ""
-    fanart_url: str = ""
-    logo_url: str = ""
-    biographies: dict[str, str] = field(default_factory=dict)
-    raw: dict[str, Any] = field(default_factory=dict)
+    def __init__(
+        self,
+        *,
+        id: str = "",
+        name: str = "",
+        genre: str = "",
+        style: str = "",
+        country: str = "",
+        formed_year: str = "",
+        website: str = "",
+        thumb_url: str = "",
+        fanart_url: str = "",
+        logo_url: str = "",
+        biographies: Optional[dict[str, str]] = None,
+        raw: Optional[dict[str, Any]] = None,
+    ) -> None:
+        self.id = id
+        self.name = name
+        self.genre = genre
+        self.style = style
+        self.country = country
+        self.formed_year = formed_year
+        self.website = website
+        self.thumb_url = thumb_url
+        self.fanart_url = fanart_url
+        self.logo_url = logo_url
+        self.biographies = biographies or {}
+        self.raw = raw or {}
 
     @classmethod
     def from_api(cls, data: dict[str, Any]) -> "Artist":
@@ -268,6 +282,96 @@ class AudioDBClient:
 
         return ""
 
+    def get_ordered_context(
+        self,
+        *,
+        artist: str,
+        title: str = "",
+        album: str = "",
+        language: str = "EN",
+        limit: int = 900,
+    ) -> dict[str, str]:
+        """Restituisce contesto ordinato: brano -> album -> artista."""
+        result = {
+            "song_news": "",
+            "album_news": "",
+            "artist_description": "",
+            "combined": "",
+        }
+        if not artist.strip():
+            return result
+
+        track = self.search_track(artist, title) if title.strip() else None
+        if track:
+            song_parts = []
+            description = self._localized_description(track, language)
+            if description:
+                song_parts.append(description)
+            details = []
+            if track.get("strTheme"):
+                details.append(f"tema {track['strTheme']}")
+            if track.get("strMood"):
+                details.append(f"mood {track['strMood']}")
+            if track.get("strAlbum"):
+                details.append(f"album {track['strAlbum']}")
+            if track.get("strGenre"):
+                details.append(f"genere {track['strGenre']}")
+            if track.get("strMusicVid"):
+                details.append("video musicale registrato")
+            if details:
+                song_parts.append("Dettagli brano: " + ", ".join(details) + ".")
+            result["song_news"] = self._shorten(" ".join(song_parts), limit)
+
+        album_data = self.search_album(artist, album) if album.strip() else None
+        if album_data:
+            album_parts = []
+            description = self._localized_description(album_data, language)
+            if description:
+                album_parts.append(description)
+            details = []
+            album_name = album_data.get("strAlbum") or album
+            if album_name:
+                details.append(f"album {album_name}")
+            if album_data.get("intYearReleased"):
+                details.append(f"pubblicato nel {album_data['intYearReleased']}")
+            if album_data.get("strLabel"):
+                details.append(f"etichetta {album_data['strLabel']}")
+            if album_data.get("strGenre"):
+                details.append(f"genere {album_data['strGenre']}")
+            if details:
+                album_parts.append("Dettagli album: " + ", ".join(details) + ".")
+            result["album_news"] = self._shorten(" ".join(album_parts), limit)
+
+        artist_data = self.get_artist(artist)
+        if artist_data:
+            artist_parts = []
+            biography = artist_data.biography(language)
+            if biography:
+                artist_parts.append(biography)
+            details = []
+            if artist_data.formed_year:
+                details.append(f"attivo/formato dal {artist_data.formed_year}")
+            if artist_data.country:
+                details.append(f"origine {artist_data.country}")
+            if artist_data.genre:
+                details.append(f"genere {artist_data.genre}")
+            if artist_data.style:
+                details.append(f"stile {artist_data.style}")
+            if details:
+                artist_parts.append("Dettagli artista: " + ", ".join(details) + ".")
+            result["artist_description"] = self._shorten(" ".join(artist_parts), limit)
+
+        combined_parts = [
+            text for text in (
+                result["song_news"],
+                result["album_news"],
+                result["artist_description"],
+            )
+            if text
+        ]
+        result["combined"] = self._shorten(" ".join(combined_parts), limit)
+        return result
+
     def get_track_text(
         self,
         *,
@@ -306,6 +410,12 @@ class AudioDBClient:
         album_data = self.search_album(artist, album) if artist.strip() and album.strip() else None
         if album_data:
             description = self._localized_description(album_data, language)
+            if description:
+                return self._shorten(description, limit)
+
+        artist_data = self.get_artist(artist) if artist.strip() else None
+        if artist_data:
+            description = artist_data.biography(language)
             if description:
                 return self._shorten(description, limit)
 

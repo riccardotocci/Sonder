@@ -638,6 +638,17 @@ def fetch_audiodb_track_text(
         )
         return first_present(data, fields)
 
+    get_ordered_context = getattr(client, "get_ordered_context", None)
+    if callable(get_ordered_context):
+        sections = get_ordered_context(
+            artist=artist,
+            title=title,
+            album=album,
+            language=lang_code,
+        )
+        if isinstance(sections, dict) and sections.get("combined"):
+            return clean(str(sections["combined"]), 900)
+
     get_track_text = getattr(client, "get_track_text", None)
     if callable(get_track_text):
         try:
@@ -855,6 +866,17 @@ def musixmatch_track_payload(
     }
 
 
+def strip_narration_source_label(text: str) -> str:
+    return re.sub(r"^\s*(?:\*\*)?\s*(?:musixmatch|theaudiodb|audio\s*db)\s*(?:\*\*)?\s*[:\-–—]?\s*", "", text or "", flags=re.IGNORECASE).strip()
+
+
+def compact_text(text: str, limit: int = 360) -> str:
+    text = " ".join((text or "").split())
+    if len(text) <= limit:
+        return text
+    return text[:limit].rsplit(" ", 1)[0].rstrip(".,;:") + "..."
+
+
 def search_musixmatch_from_plan(plan: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
     if not settings.musixmatch_ready:
         return [], ["Musixmatch not configured: set `MUSIXMATCH_API_KEY` or `MXM_KEY`."]
@@ -889,7 +911,7 @@ def search_musixmatch_from_plan(plan: dict[str, Any]) -> tuple[list[dict[str, An
                 artist=q_artist or None,
                 lyrics=q_lyrics or None,
                 has_lyrics=True,
-                limit=limit - len(results),
+                limit=1,
             )
         except MusixmatchError as exc:
             notes.append(f"Musixmatch: {exc}")
@@ -899,8 +921,7 @@ def search_musixmatch_from_plan(plan: dict[str, Any]) -> tuple[list[dict[str, An
                 continue
             seen.add(match.track_id)
             results.append(musixmatch_track_payload(mx_client, match, reason=reason))
-            if len(results) >= limit:
-                break
+            break
     return results, notes
 
 
@@ -1106,6 +1127,20 @@ def enrich_tracks_with_audiodb_facts(
         if not artist:
             continue
         try:
+            ordered_context = client.get_ordered_context(
+                artist=artist,
+                title=title,
+                album=album,
+                language=lang_code,
+            )
+            if ordered_context.get("song_news"):
+                t["audio_db_song_news"] = ordered_context["song_news"]
+            if ordered_context.get("album_news"):
+                t["audio_db_album_news"] = ordered_context["album_news"]
+            if ordered_context.get("artist_description"):
+                t["audio_db_artist_description"] = ordered_context["artist_description"]
+            if ordered_context.get("combined"):
+                t["audio_db_text"] = ordered_context["combined"]
             if title and not t.get("audio_db_text"):
                 text = fetch_audiodb_track_text(
                     client,
@@ -1196,6 +1231,20 @@ def build_studio(
                     bio = a.biography(lang_code) or ""
                     image_cache[artist] = a.image_url
                     t["image"] = a.image_url
+                ordered_context = adb_client.get_ordered_context(
+                    artist=artist,
+                    title=title,
+                    album=str(t.get("album", "")),
+                    language=lang_code,
+                )
+                if ordered_context.get("song_news"):
+                    t["audio_db_song_news"] = ordered_context["song_news"]
+                if ordered_context.get("album_news"):
+                    t["audio_db_album_news"] = ordered_context["album_news"]
+                if ordered_context.get("artist_description"):
+                    t["audio_db_artist_description"] = ordered_context["artist_description"]
+                if ordered_context.get("combined"):
+                    t["audio_db_text"] = ordered_context["combined"]
                 if not t.get("audio_db_text"):
                     text = fetch_audiodb_track_text(
                         adb_client,
@@ -1227,6 +1276,9 @@ def build_studio(
 
         t.setdefault("audio_db_fact", "")
         t.setdefault("audio_db_text", "")
+        t.setdefault("audio_db_song_news", "")
+        t.setdefault("audio_db_album_news", "")
+        t.setdefault("audio_db_artist_description", "")
         t["_bio"] = bio  # campo temporaneo letto da studio_brief(), rimosso dopo
 
     # 2) Discorsi parlati + mood + origine geografica + riassunto (una sola chiamata LLM).
@@ -1253,19 +1305,25 @@ def build_studio(
         narrations = brief.get("narrations") or []
         for i, t in enumerate(enriched):
             n = narrations[i] if i < len(narrations) else {}
-            musixmatch_speech = str(n.get("musixmatch_speech", "")).strip()
-            audiodb_speech = str(n.get("audiodb_speech", "")).strip()
+            musixmatch_speech = strip_narration_source_label(str(n.get("musixmatch_speech", "")).strip())
+            audiodb_speech = strip_narration_source_label(str(n.get("audiodb_speech", "")).strip())
             if not musixmatch_speech:
                 musixmatch_source = str(t.get("lyrics") or t.get("reason") or "").strip()
                 if musixmatch_source:
                     musixmatch_speech = compact_text(musixmatch_source, 220)
             if not audiodb_speech:
-                audiodb_source = str(t.get("audio_db_text") or t.get("audio_db_fact") or t.get("_bio") or "").strip()
+                audiodb_source = str(
+                    t.get("audio_db_song_news")
+                    or t.get("audio_db_album_news")
+                    or t.get("audio_db_artist_description")
+                    or t.get("audio_db_text")
+                    or t.get("audio_db_fact")
+                    or t.get("_bio")
+                    or ""
+                ).strip()
                 if audiodb_source:
                     audiodb_speech = compact_text(audiodb_source, 220)
-            combined_speech = str(n.get("speech", "")).strip()
-            if not combined_speech:
-                combined_speech = " ".join(part for part in (musixmatch_speech, audiodb_speech) if part).strip()
+            combined_speech = " ".join(part for part in (musixmatch_speech, audiodb_speech) if part).strip()
             t["musixmatch_speech"] = musixmatch_speech
             t["audiodb_speech"] = audiodb_speech
             t["speech"] = combined_speech
@@ -1650,8 +1708,8 @@ STUDIO_HTML = """
         const adb = (t.audiodb_speech || '').trim();
         if (musix || adb) {
             cSpeech.innerHTML =
-                (musix ? '<div><b>Musixmatch</b><br>' + esc(musix) + '</div>' : '') +
-                (adb ? '<div style="margin-top:12px;"><b>TheAudioDB</b><br>' + esc(adb) + '</div>' : '');
+                (musix ? '<div>' + esc(musix) + '</div>' : '') +
+                (adb ? '<div style="margin-top:12px;">' + esc(adb) + '</div>' : '');
         } else {
             cSpeech.textContent = t.speech || (t.reason || 'No speech available for this track.');
         }
@@ -2189,8 +2247,9 @@ def handle_user_input(prompt: str, lang_name: str, lang_code: str) -> None:
         return
 
     teller = storyteller_for_session()
+    add_llm_log("LLM model", selected_llm_model())
 
-    with st.spinner("Searching Musixmatch..."):
+    with st.spinner("Planning Musixmatch search..."):
         try:
             history = [
                 {"role": m["role"], "content": m["content"]}
@@ -2219,8 +2278,10 @@ def handle_user_input(prompt: str, lang_name: str, lang_code: str) -> None:
                 "Search router",
                 f"music_related={plan.get('music_related', True)}, "
                 f"needs_search={plan.get('needs_search', True)}, "
-                f"limit={plan.get('limit', 8)}"
-                + ("\nQueries: " + "; ".join(query_details) if query_details else ""),
+                f"limit={plan.get('limit', 8)}, "
+                f"query_count={len(query_details)}"
+                + ("\nQueries: " + "; ".join(query_details) if query_details else "")
+                + ("\nFallback: " + str(plan.get("_router_fallback")) if plan.get("_router_fallback") else ""),
             )
         except StorytellerError as exc:
             add_llm_log("Search router failed", user_facing_llm_error(exc))
@@ -2268,7 +2329,8 @@ def handle_user_input(prompt: str, lang_name: str, lang_code: str) -> None:
         st.session_state["studio"] = empty_studio(prompt)
         return
 
-    tracks, notes = search_musixmatch_from_plan(plan)
+    with st.spinner("Searching Musixmatch..."):
+        tracks, notes = search_musixmatch_from_plan(plan)
     add_llm_log(
         "Musixmatch search",
         f"Found {len(tracks)} tracks." + ("\n" + "\n".join(notes) if notes else ""),
