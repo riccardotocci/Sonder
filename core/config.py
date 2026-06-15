@@ -23,7 +23,7 @@ LLM_MODEL_OPTIONS: tuple[tuple[str, str], ...] = (
     ("Nex N2 Pro", "nex-agi/nex-n2-pro:free"),
     ("GPT OSS 120B", "openai/gpt-oss-120b:free"),
 )
-DEFAULT_LLM_MODEL = LLM_MODEL_OPTIONS[0][1]
+DEFAULT_LLM_MODEL = LLM_MODEL_OPTIONS[5][1]
 
 
 def _env(key: str, default: str = "") -> str:
