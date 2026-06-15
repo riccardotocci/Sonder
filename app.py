@@ -821,10 +821,10 @@ def search_musixmatch_from_plan(plan: dict[str, Any]) -> tuple[list[dict[str, An
     seen: set[int] = set()
     mx_client = MusixmatchClient()
     try:
-        limit = int(plan.get("limit", 8))
+        limit = int(plan.get("limit", 10))
     except (TypeError, ValueError):
-        limit = 8
-    limit = max(1, min(limit, 8))
+        limit = 10
+    limit = max(1, min(limit, 10))
 
     queries = plan.get("queries") or []
     if not isinstance(queries, list):
@@ -1210,7 +1210,22 @@ def build_studio(
         narrations = brief.get("narrations") or []
         for i, t in enumerate(enriched):
             n = narrations[i] if i < len(narrations) else {}
-            t["speech"] = str(n.get("speech", "")).strip()
+            musixmatch_speech = str(n.get("musixmatch_speech", "")).strip()
+            audiodb_speech = str(n.get("audiodb_speech", "")).strip()
+            if not musixmatch_speech:
+                musixmatch_source = str(t.get("lyrics") or t.get("reason") or "").strip()
+                if musixmatch_source:
+                    musixmatch_speech = compact_text(musixmatch_source, 220)
+            if not audiodb_speech:
+                audiodb_source = str(t.get("audio_db_text") or t.get("audio_db_fact") or t.get("_bio") or "").strip()
+                if audiodb_source:
+                    audiodb_speech = compact_text(audiodb_source, 220)
+            combined_speech = str(n.get("speech", "")).strip()
+            if not combined_speech:
+                combined_speech = " ".join(part for part in (musixmatch_speech, audiodb_speech) if part).strip()
+            t["musixmatch_speech"] = musixmatch_speech
+            t["audiodb_speech"] = audiodb_speech
+            t["speech"] = combined_speech
             t["mood"] = str(n.get("mood", "")).strip()
             t["origin"] = str(n.get("origin", "")).strip()
             try:
@@ -1238,6 +1253,8 @@ def build_studio(
         t.setdefault("lyrics", "")
         t.setdefault("richsync", [])
         t.setdefault("audio_db_text", "")
+        t.setdefault("musixmatch_speech", "")
+        t.setdefault("audiodb_speech", "")
 
     if getattr(settings, "elevenlabs_ready", False):
         add_llm_log(
@@ -1478,6 +1495,41 @@ STUDIO_HTML = """
     return 'https://open.spotify.com/search/' + encodeURIComponent(((t.title || '') + ' ' + (t.artist || '')).trim());
   }
 
+    function normalizeSearchText(s) {
+        return String(s || '')
+            .replace(/\s*[\(\[].*?[\)\]]/g, ' ')
+            .replace(/\s+[-–—]\s+(remaster(ed)?|live|radio edit|single version|album version|explicit|clean|mono|stereo).*$/i, ' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    function spotifyQueries(t) {
+        const title = normalizeSearchText(t.title || '');
+        const artist = normalizeSearchText(t.artist || '').replace(/\s+(feat\.?|ft\.?|featuring)\s+.*$/i, '').trim();
+        const album = normalizeSearchText(t.album || '');
+        const queries = [];
+        if (title && artist && album) queries.push('track:' + title + ' artist:' + artist + ' album:' + album);
+        if (title && artist) queries.push('track:' + title + ' artist:' + artist);
+        if (title && album) queries.push('track:' + title + ' album:' + album);
+        if (title) queries.push((title + ' ' + artist).trim());
+        return [...new Set(queries.filter(Boolean))];
+    }
+
+    function spotifyMatchScore(item, t) {
+        const title = normalizeSearchText(t.title || '').toLowerCase();
+        const artist = normalizeSearchText(t.artist || '').toLowerCase().replace(/\s+(feat\.?|ft\.?|featuring)\s+.*$/i, '').trim();
+        const album = normalizeSearchText(t.album || '').toLowerCase();
+        const itemTitle = normalizeSearchText(item.name || '').toLowerCase();
+        const itemAlbum = normalizeSearchText(item.album && item.album.name || '').toLowerCase();
+        const itemArtists = (item.artists || []).map(a => normalizeSearchText(a.name || '').toLowerCase()).join(' ');
+        let score = 0;
+        if (itemTitle === title) score += 60;
+        else if (itemTitle.includes(title) || title.includes(itemTitle)) score += 35;
+        if (artist && itemArtists.includes(artist)) score += 30;
+        if (album && itemAlbum && (itemAlbum === album || itemAlbum.includes(album) || album.includes(itemAlbum))) score += 10;
+        return score;
+    }
+
   function showSpotifyEmbed(uri) {
     const id = spotifyTrackId(uri);
     if (!id) return;
@@ -1680,19 +1732,36 @@ STUDIO_HTML = """
     if (t.uri) return t.uri;
     if (!TOKEN) return '';
     try {
-      const q = encodeURIComponent('track:' + t.title + ' artist:' + t.artist);
-      const r = await api('/search?type=track&limit=1&q=' + q);
-      if (r.ok) {
-        const d = await r.json();
-        const it = d.tracks && d.tracks.items && d.tracks.items[0];
-        if (it) {
-          t.uri = it.uri;
-          const img = it.album && it.album.images && it.album.images[0];
-          if (img) { t.art = img.url; if (!t.image) t.image = img.url; }
-          return t.uri;
+            for (const query of spotifyQueries(t)) {
+                const r = await api('/search?type=track&limit=5&q=' + encodeURIComponent(query));
+                if (r.ok) {
+                    const d = await r.json();
+                    const items = d.tracks && d.tracks.items ? d.tracks.items : [];
+                    const ranked = items
+                        .map(item => ({ item, score: spotifyMatchScore(item, t) }))
+                        .sort((a, b) => b.score - a.score);
+                    const best = ranked[0];
+                    if (best && best.item && best.score >= 45) {
+                        const it = best.item;
+                        t.uri = it.uri;
+                        t.spotify_match = { name: it.name, artist: (it.artists || []).map(a => a.name).join(', '), score: best.score };
+                        const img = it.album && it.album.images && it.album.images[0];
+                        if (img) { t.art = img.url; if (!t.image) t.image = img.url; }
+                        return t.uri;
+                    }
         }
       }
     } catch (e) {}
+            const musix = (t.musixmatch_speech || '').trim();
+            const adb = (t.audiodb_speech || '').trim();
+            if (musix || adb) {
+                cSpeech.innerHTML =
+                    (musix ? '<div><b>Musixmatch</b><br>' + esc(musix) + '</div>' : '') +
+                    (adb ? '<div style="margin-top:12px;"><b>TheAudioDB</b><br>' + esc(adb) + '</div>' : '');
+            } else {
+                cSpeech.textContent = t.speech || (t.reason || 'No speech available for this track.');
+            }
+        const text = (t.speech || [t.musixmatch_speech, t.audiodb_speech].filter(Boolean).join(' ') || '').trim();
     return '';
   }
 
@@ -1910,6 +1979,8 @@ def render_studio_component(studio: dict) -> None:
             "title": t.get("title", ""),
             "artist": t.get("artist", ""),
             "speech": t.get("speech", ""),
+            "musixmatch_speech": t.get("musixmatch_speech", ""),
+            "audiodb_speech": t.get("audiodb_speech", ""),
             "mood": t.get("mood", ""),
             "origin": t.get("origin", ""),
             "reason": t.get("reason", ""),

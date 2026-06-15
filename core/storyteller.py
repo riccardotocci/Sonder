@@ -118,9 +118,6 @@ MUSIXMATCH_SEARCH_TEMPLATE = """Prepara query Musixmatch concise. Rispondi SOLO 
 
 Lingua: {language_rule}
 
-Contesto:
-{context}
-
 Messaggi:
 {messages}
 
@@ -136,18 +133,18 @@ Schema:
 {{
   "music_related": true,
   "needs_search": true,
-    "limit": 4,
+    "limit": 10,
   "queries": [
     {{
       "q": "",
       "q_track": "",
       "q_artist": "",
       "q_lyrics": "",
-            "reason": ""
+    "reason": ""
     }}
   ]
 }}
-Usa limit 1-4. Se non serve cercare, needs_search=false e queries=[]."""
+Usa limit 1-10. Se non serve cercare, needs_search=false e queries=[]."""
 
 
 MUSIXMATCH_RESPONSE_TEMPLATE = """Richiesta: {prompt}
@@ -168,8 +165,10 @@ STUDIO_BRIEF_TEMPLATE = """Crea una regia audio concisa per: "{title}".
 Brani (nell'ordine):
 {tracks}
 
-Per ogni brano scrivi una frase parlata di 35-55 parole in {language}.
-Usa dettagli forniti, soprattutto TheAudioDB. Non inventare.
+Per ogni brano scrivi DUE parti separate in {language}:
+- musixmatch_speech: 25-40 parole basate solo su testo/richsync Musixmatch e motivo ricerca.
+- audiodb_speech: 25-40 parole basate solo su TheAudioDB/biografia/metadati.
+Non mescolare le fonti. Non inventare.
 
 Rispondi SOLO JSON valido:
 {{
@@ -177,7 +176,9 @@ Rispondi SOLO JSON valido:
     {{
       "title": "...",
       "artist": "...",
-            "speech": "...",
+            "musixmatch_speech": "...",
+            "audiodb_speech": "...",
+            "speech": "<musixmatch_speech + spazio + audiodb_speech>",
             "mood": "...",
             "origin": "...",
       "lat": <latitudine decimale dell'origine>,
@@ -299,17 +300,17 @@ class Storyteller:
             lyrics = (t.get("lyrics") or "").strip()
             if bio:
                 bio_short = bio[:180] + ("…" if len(bio) > 180 else "")
-                line += f'\n   Biografia: {bio_short}'
+                line += f'\n   TheAudioDB bio: {bio_short}'
             if lyrics:
                 lyrics_short = lyrics[:180] + ("…" if len(lyrics) > 180 else "")
-                line += f'\n   Testo (estratto): {lyrics_short}'
+                line += f'\n   Musixmatch testo: {lyrics_short}'
             audiodb_text = (t.get("audio_db_text") or t.get("audiodb_text") or "").strip()
             if audiodb_text:
                 audiodb_short = audiodb_text[:240] + ("…" if len(audiodb_text) > 240 else "")
-                line += f'\n   Testo/contesto TheAudioDB: {audiodb_short}'
+                line += f'\n   TheAudioDB contesto: {audiodb_short}'
             fact = (t.get("audio_db_fact") or t.get("audiodb_fact") or "").strip()
             if fact and fact != audiodb_text:
-                line += f'\n   Curiosita TheAudioDB: {fact}'
+                line += f'\n   TheAudioDB nota: {fact}'
             track_parts.append(line)
         track_lines = "\n\n".join(track_parts)
         user = STUDIO_BRIEF_TEMPLATE.format(
@@ -337,7 +338,7 @@ class Storyteller:
             )
         else:
             language_rule = f"Interpreta la richiesta e rispondi in {language} quando richiesto."
-        recent = messages[-8:]
+        recent = messages[-4:]
         last_user = ""
         for message in reversed(messages):
             if message.get("role") == "user":
@@ -357,7 +358,7 @@ class Storyteller:
             return {
                 "music_related": True,
                 "needs_search": True,
-                "limit": 4,
+                "limit": 10,
                 "queries": [{"q": last_user, "q_track": "", "q_artist": "", "q_lyrics": "", "reason": ""}],
             }
         def as_bool(value: Any, default: bool) -> bool:
@@ -371,10 +372,10 @@ class Storyteller:
                     return False
             return default
         try:
-            limit = int(data.get("limit", 4))
+            limit = int(data.get("limit", 10))
         except (TypeError, ValueError):
-            limit = 4
-        limit = max(1, min(limit, 4))
+            limit = 10
+        limit = max(1, min(limit, 10))
         queries: list[dict[str, str]] = []
         raw_queries = data.get("queries") or []
         if isinstance(raw_queries, list):
