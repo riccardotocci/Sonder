@@ -122,7 +122,7 @@ ELEVENLABS_VOICE_ID = "JBFqnCBsd6RMkjVDRZzb"
 SONDER_TTS_MODE = "embedded"
 ```
 
-`SONDER_TTS_MODE = "embedded"` evita l'endpoint locale `127.0.0.1`: in deploy il browser dell'utente non puo' contattare il localhost del container Streamlit, quindi gli MP3 vengono generati lato server e incorporati nel componente.
+`SONDER_TTS_MODE = "embedded"` evita l'endpoint locale `127.0.0.1`: in deploy il browser dell'utente non puo' contattare il localhost del container Streamlit, quindi ogni MP3 viene generato lato server e incorporato nel componente solo quando premi Play su quella traccia.
 
 ---
 

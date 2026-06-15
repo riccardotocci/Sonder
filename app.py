@@ -142,25 +142,103 @@ def _elevenlabs_audio_b64(
     return base64.b64encode(audio).decode("ascii")
 
 
-def _embed_elevenlabs_audio(tracks: list[dict]) -> None:
-    """Populate audio_b64 for tracks when the browser cannot call localhost."""
+def _ensure_track_elevenlabs_audio(track: dict) -> bool:
+    """Populate audio_b64 for one track when Play is requested."""
+    if track.get("audio_b64"):
+        return True
+    text = _track_narration_text(track)
+    if not text:
+        return False
     voice_id = settings.elevenlabs_voice_id or ElevenLabsClient.DEFAULT_VOICE
-    for index, track in enumerate(tracks):
-        if track.get("audio_b64"):
-            continue
-        text = _track_narration_text(track)
-        if not text:
-            continue
+    track["audio_b64"] = _elevenlabs_audio_b64(
+        text,
+        voice_id,
+        ElevenLabsClient.DEFAULT_MODEL,
+        ElevenLabsClient.DEFAULT_OUTPUT_FORMAT,
+    )
+    return True
+
+
+def _query_param_value(name: str, default: str = "") -> str:
+    value = st.query_params.get(name, default)
+    if isinstance(value, list):
+        value = value[0] if value else default
+    return str(value or default)
+
+
+def _clear_tts_query_params() -> None:
+    for key in (
+        "sonder_tts_track",
+        "sonder_tts_seq",
+        "sonder_tts_order",
+        "sonder_tts_pos",
+        "sonder_tts_nonce",
+    ):
+        if key in st.query_params:
+            del st.query_params[key]
+
+
+def _parse_tts_order(raw_order: str, track_count: int) -> list[int]:
+    order: list[int] = []
+    for raw_item in raw_order.split(","):
         try:
-            track["audio_b64"] = _elevenlabs_audio_b64(
-                text,
-                voice_id,
-                ElevenLabsClient.DEFAULT_MODEL,
-                ElevenLabsClient.DEFAULT_OUTPUT_FORMAT,
-            )
-        except ElevenLabsError as exc:
-            title = str(track.get("title", f"track {index + 1}") or f"track {index + 1}")
-            add_llm_log("ElevenLabs TTS", f"Audio embedding failed for {title}: {exc}")
+            index = int(raw_item)
+        except ValueError:
+            continue
+        if 0 <= index < track_count and index not in order:
+            order.append(index)
+    return order
+
+
+def handle_embedded_tts_request(studio: dict) -> None:
+    """Generate one embedded ElevenLabs audio clip requested by the iframe."""
+    raw_index = _query_param_value("sonder_tts_track")
+    if not raw_index:
+        return
+    tracks = studio.get("tracks") or []
+    try:
+        index = int(raw_index)
+    except ValueError:
+        _clear_tts_query_params()
+        st.rerun()
+    if not (0 <= index < len(tracks)):
+        _clear_tts_query_params()
+        st.rerun()
+
+    seq = _query_param_value("sonder_tts_seq") == "1"
+    order = _parse_tts_order(_query_param_value("sonder_tts_order"), len(tracks))
+    if not order:
+        order = list(range(len(tracks)))
+    try:
+        pos = int(_query_param_value("sonder_tts_pos", "0"))
+    except ValueError:
+        pos = 0
+
+    audio_ready = bool(0 <= index < len(tracks) and tracks[index].get("audio_b64"))
+    if getattr(settings, "elevenlabs_ready", False) and _use_embedded_tts() and not _tts_disabled():
+        with st.spinner("Generating ElevenLabs narration audio..."):
+            try:
+                audio_ready = _ensure_track_elevenlabs_audio(tracks[index])
+                if not audio_ready:
+                    title = str(tracks[index].get("title", f"track {index + 1}") or f"track {index + 1}")
+                    studio.setdefault("llm_log", []).append(
+                        {"step": "ElevenLabs TTS", "detail": f"Narration text missing for {title}."}
+                    )
+            except ElevenLabsError as exc:
+                title = str(tracks[index].get("title", f"track {index + 1}") or f"track {index + 1}")
+                studio.setdefault("llm_log", []).append(
+                    {"step": "ElevenLabs TTS", "detail": f"Audio generation failed for {title}: {exc}"}
+                )
+
+    if audio_ready:
+        st.session_state["_sonder_tts_autoplay"] = {
+            "index": index,
+            "seq": seq,
+            "order": order,
+            "pos": max(0, min(pos, max(len(order) - 1, 0))),
+        }
+    _clear_tts_query_params()
+    st.rerun()
 
 # Lingua UI -> (nome per il prompt LLM, codice biografia TheAudioDB)
 # "🌐 Auto" => il modello riconosce automaticamente la lingua dell'utente.
@@ -1526,7 +1604,7 @@ def build_studio(
 
     if getattr(settings, "elevenlabs_ready", False) and not _tts_disabled():
         if _use_embedded_tts():
-            tts_message = "Narration audio will be generated server-side and embedded for Streamlit Cloud."
+            tts_message = "Narration audio will be generated server-side one track at a time when playback starts."
         else:
             tts_message = "Narration audio will be generated on demand through the local TTS endpoint."
         add_llm_log(
@@ -1721,12 +1799,13 @@ STUDIO_HTML = """
   </div>
 
 <script>
-  const TRACKS = __TRACKS__;
-  const TOKEN = __TOKEN__;
+    const TRACKS = __TRACKS__;
+    const TOKEN = __TOKEN__;
     const TTS_ENDPOINT = __TTS_ENDPOINT__;
     const TTS_TOKEN = __TTS_TOKEN__;
     const TTS_MODE = __TTS_MODE__;
-  const PLAYLIST_NAME = __PLAYLIST__;
+    const AUTOPLAY = __AUTOPLAY__;
+    const PLAYLIST_NAME = __PLAYLIST__;
   const PALETTE = ["#ff2d78","#f97316","#22d3ee","#facc15","#c2410c","#34d399"];
 
     let embedController = null;
@@ -1767,6 +1846,7 @@ STUDIO_HTML = """
     ttsLog('component initialized', {
         tracks: TRACKS.length,
         mode: TTS_MODE,
+        autoplay: AUTOPLAY,
         endpoint: TTS_ENDPOINT || '(empty)',
         hasToken: Boolean(TTS_TOKEN),
         hasSpotifyToken: Boolean(TOKEN)
@@ -2071,6 +2151,19 @@ STUDIO_HTML = """
         }
   }
 
+    function requestEmbeddedTts(i) {
+        const activeOrder = order.length ? order : TRACKS.map((_, idx) => idx);
+        const url = new URL(document.referrer || window.location.href);
+        url.searchParams.set('sonder_tts_track', String(i));
+        url.searchParams.set('sonder_tts_seq', autoSeq ? '1' : '0');
+        url.searchParams.set('sonder_tts_order', activeOrder.join(','));
+        url.searchParams.set('sonder_tts_pos', String(Math.max(0, seqPos)));
+        url.searchParams.set('sonder_tts_nonce', String(Date.now()));
+        setStatus('Generating ElevenLabs narration...');
+        window.parent.location.href = url.toString();
+        throw new Error('tts_generation_requested');
+    }
+
     async function narrationAudioUrl(i) {
         const t = TRACKS[i];
         ttsLog('narrationAudioUrl start', { index: i, title: t.title, hasEndpoint: Boolean(TTS_ENDPOINT), hasToken: Boolean(TTS_TOKEN) });
@@ -2086,6 +2179,10 @@ STUDIO_HTML = """
             t.audio_url = 'data:audio/mpeg;base64,' + t.audio_b64;
             ttsLog('using embedded audio_b64', { index: i, bytesApprox: t.audio_b64.length });
             return t.audio_url;
+        }
+        if (TTS_MODE === 'embedded') {
+            ttsLog('requesting embedded audio generation', { index: i });
+            requestEmbeddedTts(i);
         }
         const primaryText = String(t.speech || '').trim();
         const fallbackText = [t.musixmatch_speech, t.audiodb_speech]
@@ -2130,6 +2227,7 @@ STUDIO_HTML = """
 
     function ttsStatusMessage(error) {
         const message = String(error && error.message || error || '');
+        if (message.includes('tts_generation_requested')) return 'Generating ElevenLabs audio...';
         if (message.includes('elevenlabs_not_configured')) return 'ElevenLabs key missing';
         if (message.includes('tts_embedded_unavailable')) return 'ElevenLabs audio unavailable';
         if (message.includes('missing_text')) return 'Narration text missing';
@@ -2159,6 +2257,7 @@ STUDIO_HTML = """
                         ttsError('speak failed', e);
             currentAudio = null;
             setStatus(ttsStatusMessage(e));
+                        if (String(e && e.message || e || '').includes('tts_generation_requested')) return;
             onend && onend();
     }
   }
@@ -2287,9 +2386,20 @@ STUDIO_HTML = """
         document.getElementById('need-login').textContent = 'Log in to your Spotify in the sidebar to resolve missing track URIs and enable the player.';
     }
     if (TRACKS.length) {
-        current = 0;
-        highlight(0);
-        showCenter(0);
+        const autoplayIndex = AUTOPLAY && Number.isInteger(AUTOPLAY.index) ? AUTOPLAY.index : -1;
+        if (autoplayIndex >= 0 && autoplayIndex < TRACKS.length) {
+            order = Array.isArray(AUTOPLAY.order) && AUTOPLAY.order.length ? AUTOPLAY.order : TRACKS.map((_, i) => i);
+            autoSeq = Boolean(AUTOPLAY.seq);
+            seqPos = Number.isInteger(AUTOPLAY.pos) ? Math.max(0, AUTOPLAY.pos) : 0;
+            current = autoplayIndex;
+            highlight(autoplayIndex);
+            showCenter(autoplayIndex);
+            setTimeout(() => runTrack(autoplayIndex, true, autoSeq), 250);
+        } else {
+            current = 0;
+            highlight(0);
+            showCenter(0);
+        }
   }
 </script>
 <script src="https://open.spotify.com/embed/iframe-api/v1" async></script>
@@ -2305,16 +2415,14 @@ def render_studio_component(studio: dict) -> None:
     tts_token = ""
     tts_label = _tts_delivery_label()
     if getattr(settings, "elevenlabs_ready", False) and not _tts_disabled():
-        if _use_embedded_tts():
-            with st.spinner("Generating ElevenLabs narration audio..."):
-                _embed_elevenlabs_audio(tracks)
-        else:
+        if not _use_embedded_tts():
             try:
                 tts_info = ensure_tts_server()
                 tts_endpoint = tts_info.endpoint
                 tts_token = tts_info.token
             except TTSServerError as exc:
                 add_llm_log("ElevenLabs TTS endpoint failed", str(exc))
+    autoplay = st.session_state.pop("_sonder_tts_autoplay", {}) or {}
     payload = [
         {
             "title": t.get("title", ""),
@@ -2349,6 +2457,7 @@ def render_studio_component(studio: dict) -> None:
         .replace("__TTS_ENDPOINT__", json.dumps(tts_endpoint))
         .replace("__TTS_TOKEN__", json.dumps(tts_token))
         .replace("__TTS_MODE__", json.dumps(tts_label))
+        .replace("__AUTOPLAY__", json.dumps(autoplay))
     )
     components.html(rendered, height=860, scrolling=False)
 
@@ -2731,6 +2840,8 @@ def main() -> None:
 
     studio = st.session_state.get("studio")
     has_tracks = bool(studio and studio.get("tracks"))
+    if has_tracks:
+        handle_embedded_tts_request(studio)
 
     # --- Barra superiore: solo il titolo del progetto ---
     logo_b64 = _logo_b64("logo_text.png")
