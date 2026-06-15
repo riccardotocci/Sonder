@@ -27,7 +27,7 @@ lo stesso filo conduttore narrativo (l'ombra, la redenzione, il conflitto umano)
 | Catalogo & testi | API Musixmatch |
 | Biografie & media | API TheAudioDB |
 | Motore di ragionamento | LLM "Thinking" (DeepSeek-R1 via OpenRouter, oppure OpenAI o3-mini) |
-| Voce narrante | ElevenLabs TTS (MP3 generati lato server) |
+| Voce narrante | ElevenLabs TTS (MP3 generati lato server on-demand) |
 | Automazione musicale | API Spotify (spotipy) |
 
 ---
@@ -48,7 +48,7 @@ lo stesso filo conduttore narrativo (l'ombra, la redenzione, il conflitto umano)
                     genera analisi psicologica + micro-racconto (Markdown)
             │
             ▼
-[ ElevenLabs ] ─► MP3 della voce narrante, senza fallback Web Speech nel browser
+[ ElevenLabs ] ─► MP3 della voce narrante solo quando parte il play della narrativa
             │
             ▼
 [ Spotify ] ─► genera/aggiorna la playlist tematica

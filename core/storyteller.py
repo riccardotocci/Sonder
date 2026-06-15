@@ -114,7 +114,7 @@ il tuo rifiuto in-character breve e senza playlist. Non rispondere mai a domande
 cucina, sport, politica, tecnologia o qualsiasi altro argomento non musicale."""
 
 
-MUSIXMATCH_SEARCH_TEMPLATE = """Leggi la conversazione e prepara SOLO le query per Musixmatch.
+MUSIXMATCH_SEARCH_TEMPLATE = """Leggi la conversazione e prepara SOLO query utili per cercare brani reali su Musixmatch.
 
 Regola lingua: {language_rule}
 
@@ -126,8 +126,14 @@ Conversazione recente:
 
 Devi decidere se l'ultimo messaggio e' musicale e se richiede una ricerca di brani/testi.
 Non proporre canzoni, artisti o playlist dalla tua memoria.
-Se l'utente cita esplicitamente titolo e artista, estraili in q_track e q_artist.
-Se l'utente chiede brani per tema, mood, genere, epoca o parole del testo, crea query testuali brevi in q e/o q_lyrics.
+
+Come scrivere query buone:
+- Se l'utente cita esplicitamente titolo e artista, estraili in q_track e q_artist.
+- Se chiede brani per tema, mood, genere, epoca o parole del testo, NON usare frasi generiche tipo "canzoni italiane cuore spezzato".
+- Trasforma il tema in 2-4 query brevi, diverse tra loro e cercabili: parole concrete, immagini emotive, frasi che potrebbero comparire nel testo, sinonimi naturali.
+- Usa q_lyrics per parole o immagini del testo; usa q solo per termini di catalogo utili (genere, scena, lingua, periodo, artista).
+- Conserva vincoli importanti come lingua, paese, epoca o genere dentro la query piu' adatta, ma evita parole di servizio come "canzoni", "brani", "playlist", "consigliami".
+- Ogni reason deve spiegare il criterio emotivo o testuale in massimo 12 parole.
 
 Rispondi SOLO con JSON valido:
 {{
@@ -155,13 +161,14 @@ MUSIXMATCH_RESPONSE_TEMPLATE = """Richiesta utente:
 Contesto opzionale:
 {context}
 
-Risultati reali trovati su Musixmatch:
+Risultati reali trovati e contesto verificato:
 {tracks}
 
 Scrivi una risposta in {language}, in Markdown pulito.
-Usa solo i brani presenti nei risultati Musixmatch.
+Usa solo i brani presenti nei risultati.
 Non aggiungere altri titoli o artisti.
-Se sono presenti testi o richsync, riscrivi/parafrasa il significato invece di copiare lunghi passaggi.
+Se e' presente testo/contesto TheAudioDB, usalo come fonte principale per motivare il brano.
+Se sono presenti testi Musixmatch o richsync, usali come supporto e riscrivi/parafrasa il significato invece di copiare lunghi passaggi.
 Se e' presente una curiosita' TheAudioDB, inseriscila in modo naturale nella risposta.
 Se non ci sono risultati, dillo chiaramente e suggerisci una query piu' precisa."""
 
@@ -171,7 +178,7 @@ per questa playlist, nata dalla richiesta dell'utente: "{title}".
 
 Per ogni brano sono forniti (quando disponibili) la biografia dell'artista e un estratto del testo.
 Usali per rendere ogni narrazione specifica, profonda e ancorata a dettagli reali.
-Se e' presente una curiosita' TheAudioDB, integrala con naturalezza nel discorso senza trasformarla in elenco.
+Se e' presente testo/contesto TheAudioDB, dagli priorita' e integralo con naturalezza nel discorso senza trasformarlo in elenco.
 
 Brani (nell'ordine):
 {tracks}
@@ -314,8 +321,12 @@ class Storyteller:
             if lyrics:
                 lyrics_short = lyrics[:500] + ("…" if len(lyrics) > 500 else "")
                 line += f'\n   Testo (estratto): {lyrics_short}'
+            audiodb_text = (t.get("audio_db_text") or t.get("audiodb_text") or "").strip()
+            if audiodb_text:
+                audiodb_short = audiodb_text[:700] + ("…" if len(audiodb_text) > 700 else "")
+                line += f'\n   Testo/contesto TheAudioDB: {audiodb_short}'
             fact = (t.get("audio_db_fact") or t.get("audiodb_fact") or "").strip()
-            if fact:
+            if fact and fact != audiodb_text:
                 line += f'\n   Curiosita TheAudioDB: {fact}'
             track_parts.append(line)
         track_lines = "\n\n".join(track_parts)
@@ -421,6 +432,10 @@ class Storyteller:
                 line += f'\n   Album: {t.get("album", "")}'
             if t.get("reason"):
                 line += f'\n   Motivo ricerca: {t.get("reason", "")}'
+            audiodb_text = (t.get("audio_db_text") or t.get("audiodb_text") or "").strip()
+            if audiodb_text:
+                audiodb_short = audiodb_text[:900] + ("…" if len(audiodb_text) > 900 else "")
+                line += f'\n   Testo/contesto TheAudioDB: {audiodb_short}'
             richsync = t.get("richsync") or []
             if isinstance(richsync, list) and richsync:
                 line += "\n   Richsync Musixmatch: disponibile"
@@ -429,7 +444,7 @@ class Storyteller:
                 lyrics_short = lyrics[:700] + ("…" if len(lyrics) > 700 else "")
                 line += f'\n   Testo Musixmatch: {lyrics_short}'
             fact = (t.get("audio_db_fact") or t.get("audiodb_fact") or "").strip()
-            if fact:
+            if fact and fact != audiodb_text:
                 line += f'\n   Curiosita TheAudioDB: {fact}'
             track_parts.append(line)
         user = MUSIXMATCH_RESPONSE_TEMPLATE.format(
@@ -440,8 +455,9 @@ class Storyteller:
         )
         return self._chat(
             system=(
-                "Sei un critico musicale. Usa solo i risultati Musixmatch forniti. "
+                "Sei un critico musicale. Usa solo i risultati forniti. "
                 "Non aggiungere altri brani, artisti o dati non presenti. "
+                "Dai priorita' al testo/contesto TheAudioDB quando presente. "
                 "Parafrasa i testi senza copiarli integralmente."
             ),
             user=user,

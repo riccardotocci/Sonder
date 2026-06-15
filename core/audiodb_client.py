@@ -39,6 +39,12 @@ DESCRIPTION_FIELDS: dict[str, str] = {
     "RU": "strDescriptionRU",
     "JP": "strDescriptionJP",
 }
+TRACK_LYRICS_FIELDS: tuple[str, ...] = (
+    "strTrackLyrics",
+    "strLyrics",
+    "strLyric",
+    "strTrackLyric",
+)
 
 
 class AudioDBError(RuntimeError):
@@ -184,6 +190,14 @@ class AudioDBClient:
         return ""
 
     @staticmethod
+    def _first_present(data: dict[str, Any], fields: tuple[str, ...]) -> str:
+        for field_name in fields:
+            text = (data.get(field_name) or "").strip()
+            if text:
+                return text
+        return ""
+
+    @staticmethod
     def _shorten(text: str, limit: int = 360) -> str:
         text = " ".join((text or "").split())
         if len(text) <= limit:
@@ -251,5 +265,48 @@ class AudioDBClient:
                 pieces.append(f"stile {artist_data.style}")
             if pieces:
                 return self._shorten(f"TheAudioDB descrive {artist_data.name or artist} come " + ", ".join(pieces) + ".")
+
+        return ""
+
+    def get_track_text(
+        self,
+        *,
+        artist: str,
+        title: str,
+        album: str = "",
+        language: str = "EN",
+        limit: int = 900,
+    ) -> str:
+        """Restituisce testo/contesto brano da TheAudioDB, se disponibile.
+
+        TheAudioDB non garantisce testi completi per ogni traccia: quando un campo
+        lyric non e' presente, usiamo la descrizione localizzata del brano come
+        contesto testuale verificato.
+        """
+        track = self.search_track(artist, title) if artist.strip() and title.strip() else None
+        if track:
+            lyrics = self._first_present(track, TRACK_LYRICS_FIELDS)
+            if lyrics:
+                return self._shorten(lyrics, limit)
+
+            description = self._localized_description(track, language)
+            if description:
+                return self._shorten(description, limit)
+
+            pieces = []
+            if track.get("strMood"):
+                pieces.append(f"mood: {track['strMood']}")
+            if track.get("strGenre"):
+                pieces.append(f"genre: {track['strGenre']}")
+            if track.get("strAlbum"):
+                pieces.append(f"album: {track['strAlbum']}")
+            if pieces:
+                return self._shorten("TheAudioDB associa il brano a " + ", ".join(pieces) + ".", limit)
+
+        album_data = self.search_album(artist, album) if artist.strip() and album.strip() else None
+        if album_data:
+            description = self._localized_description(album_data, language)
+            if description:
+                return self._shorten(description, limit)
 
         return ""

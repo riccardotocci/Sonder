@@ -26,7 +26,7 @@ from core.audiodb_client import AudioDBClient, AudioDBError
 from core.lastfm_client import LastFMClient, LastFMError
 from core.storyteller import Storyteller, StorytellerError
 from core.spotify_client import SpotifyClient, SpotifyError
-from core.elevenlabs_client import ElevenLabsClient, ElevenLabsError
+from core.tts_server import TTSServerError, ensure_tts_server
 from core import spotify_pkce
 
 logger = logging.getLogger("sonder.llm")
@@ -530,7 +530,7 @@ def render_llm_log(entries: list[dict[str, str]] | None = None) -> None:
 # Tool musicali (contesto + playlist)
 # --------------------------------------------------------------------------- #
 def fetch_song_context(title: str, artist: str, lang_code: str) -> tuple[str, list[str]]:
-    """Recupera testo (Musixmatch) e biografia (TheAudioDB) come contesto per la chat."""
+    """Recupera testo (Musixmatch) e contesto TheAudioDB per la chat."""
     parts: list[str] = []
     notes: list[str] = []
 
@@ -561,7 +561,15 @@ def fetch_song_context(title: str, artist: str, lang_code: str) -> tuple[str, li
     bio = ""
     if artist and settings.audiodb_ready:
         try:
-            artist_obj = AudioDBClient().get_artist(artist)
+            adb_client = AudioDBClient()
+            audiodb_text = adb_client.get_track_text(
+                artist=artist,
+                title=title,
+                language=lang_code,
+            )
+            if audiodb_text:
+                parts.append(f"Testo/contesto brano (TheAudioDB):\n{audiodb_text}")
+            artist_obj = adb_client.get_artist(artist)
             if artist_obj:
                 bio = artist_obj.biography(lang_code)
                 if bio:
@@ -645,6 +653,7 @@ def musixmatch_track_payload(
         "richsync": richsync_body,
         "has_lyrics": track.has_lyrics,
         "has_richsync": track.has_richsync,
+        "audio_db_text": "",
         "audio_db_fact": "",
     }
 
@@ -886,13 +895,13 @@ def enrich_tracks_with_audiodb_facts(
     tracks: list[dict[str, Any]],
     lang_code: str,
 ) -> list[str]:
-    """Aggiunge a ogni brano una curiosita' TheAudioDB best-effort."""
+    """Aggiunge a ogni brano testo/contesto e curiosita' TheAudioDB best-effort."""
     if not settings.audiodb_ready:
-        return ["TheAudioDB not configured: curiosities were not fetched."]
+        return ["TheAudioDB not configured: text context and curiosities were not fetched."]
     notes: list[str] = []
     client = AudioDBClient()
     for t in tracks:
-        if t.get("audio_db_fact"):
+        if t.get("audio_db_fact") and t.get("audio_db_text"):
             continue
         artist = str(t.get("artist", "")).strip()
         title = str(t.get("title", "")).strip()
@@ -900,6 +909,15 @@ def enrich_tracks_with_audiodb_facts(
         if not artist:
             continue
         try:
+            if title and not t.get("audio_db_text"):
+                text = client.get_track_text(
+                    artist=artist,
+                    title=title,
+                    album=album,
+                    language=lang_code,
+                )
+                if text:
+                    t["audio_db_text"] = text
             fact = client.get_music_fact(
                 artist=artist,
                 title=title,
@@ -980,6 +998,15 @@ def build_studio(
                     bio = a.biography(lang_code) or ""
                     image_cache[artist] = a.image_url
                     t["image"] = a.image_url
+                if not t.get("audio_db_text"):
+                    text = adb_client.get_track_text(
+                        artist=artist,
+                        title=title,
+                        album=str(t.get("album", "")),
+                        language=lang_code,
+                    )
+                    if text:
+                        t["audio_db_text"] = text
                 if not t.get("audio_db_fact"):
                     fact = adb_client.get_music_fact(
                         artist=artist,
@@ -1000,6 +1027,7 @@ def build_studio(
                 pass
 
         t.setdefault("audio_db_fact", "")
+        t.setdefault("audio_db_text", "")
         t["_bio"] = bio  # campo temporaneo letto da studio_brief(), rimosso dopo
 
     # 2) Discorsi parlati + mood + origine geografica + riassunto (una sola chiamata LLM).
@@ -1053,34 +1081,18 @@ def build_studio(
         t.setdefault("audio_b64", "")
         t.setdefault("lyrics", "")
         t.setdefault("richsync", [])
+        t.setdefault("audio_db_text", "")
 
-    # 4) ElevenLabs TTS — pre-generate speech audio for each track (best effort).
-    # Uses getattr so the block is skipped safely if the module cache is stale.
-    try:
-        if getattr(settings, "elevenlabs_ready", False):
-            generated_audio = 0
-            el = ElevenLabsClient()
-            for t in enriched:
-                speech = t.get("speech", "").strip()
-                if speech:
-                    try:
-                        audio_bytes = el.text_to_speech(speech)
-                        t["audio_b64"] = base64.b64encode(audio_bytes).decode()
-                        generated_audio += 1
-                    except Exception:
-                        t["audio_b64"] = ""
-            add_llm_log(
-                "ElevenLabs TTS",
-                f"Generated MP3 narration for {generated_audio}/{len(enriched)} tracks.",
-            )
-        else:
-            add_llm_log(
-                "ElevenLabs TTS",
-                "ELEVENLABS_API_KEY is missing: browser voice fallback is disabled.",
-            )
-    except Exception:
-        add_llm_log("ElevenLabs TTS failed", "Narration MP3 generation did not complete.")
-        pass
+    if getattr(settings, "elevenlabs_ready", False):
+        add_llm_log(
+            "ElevenLabs TTS",
+            "Narration audio will be generated on demand when playback starts.",
+        )
+    else:
+        add_llm_log(
+            "ElevenLabs TTS",
+            "ELEVENLABS_API_KEY is missing: narration audio is disabled.",
+        )
 
     return {
         "prompt": prompt,
@@ -1099,8 +1111,8 @@ STUDIO_HTML = """
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@400;600&display=swap');
   * { box-sizing: border-box; }
-  html, body { margin: 0; padding: 0; }
-  body { font-family: 'Inter', 'Segoe UI', sans-serif; color: #e8e6f5; background: transparent; }
+    html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+    body { font-family: 'Inter', 'Segoe UI', sans-serif; color: #e8e6f5; background: transparent; }
 
   ::-webkit-scrollbar { width: 8px; }
   ::-webkit-scrollbar-track { background: transparent; }
@@ -1210,7 +1222,8 @@ STUDIO_HTML = """
   #lyrics-box {
     flex: 1 1 auto; min-height: 160px; overflow-y: auto; padding: 10px 14px;
     background: rgba(255,255,255,.03); border-radius: 12px;
-    border: 1px solid rgba(255,255,255,.08); scroll-behavior: smooth;
+        border: 1px solid rgba(255,255,255,.08); scroll-behavior: smooth;
+        overscroll-behavior: contain;
   }
   .lyr-empty { color: #6f6a85; font-size: .82rem; font-style: italic; padding: 6px; }
   .lyr-line {
@@ -1260,6 +1273,8 @@ STUDIO_HTML = """
 <script>
   const TRACKS = __TRACKS__;
   const TOKEN = __TOKEN__;
+    const TTS_ENDPOINT = __TTS_ENDPOINT__;
+    const TTS_TOKEN = __TTS_TOKEN__;
   const PLAYLIST_NAME = __PLAYLIST__;
   const PALETTE = ["#ff2d78","#f97316","#22d3ee","#facc15","#c2410c","#34d399"];
 
@@ -1277,6 +1292,7 @@ STUDIO_HTML = """
   let order = [];
   let seqPos = 0;
   let current = -1;
+    const audioObjectUrls = new Map();
 
   const statusEl = document.getElementById('status');
   const listEl = document.getElementById('list');
@@ -1391,6 +1407,11 @@ STUDIO_HTML = """
         return n > 1000 ? n / 1000 : n;
     }
 
+    function datasetTime(value) {
+        if (value === undefined || value === null || value === '') return null;
+        return numericTime(value);
+    }
+
   function richsyncLineText(item) {
     const line = item && (item.l || item.line || item.text || '');
     if (Array.isArray(line)) {
@@ -1425,9 +1446,11 @@ STUDIO_HTML = """
             return '<span class="lyr-word" data-offset="' + offset + '" data-word="' + wordIdx + '">' + esc(raw) + '</span>';
           }).join('');
         }
-                const endAttr = end === null ? '' : end;
+                                const endAttr = end === null ? '' : end;
                 return '<div class="lyr-line" data-idx="' + idx + '" data-start="' + start + '" data-end="' + endAttr + '">' + htmlText + '</div>';
       }).join('');
+            box.scrollTop = 0;
+            syncLyrics(embedPosition, embedDuration);
       return;
     }
     if (!t.lyrics || !t.lyrics.trim()) {
@@ -1440,6 +1463,8 @@ STUDIO_HTML = """
     box.innerHTML = lines.map((l, idx) =>
       '<div class="lyr-line" data-idx="' + idx + '">' + esc(l) + '</div>'
     ).join('');
+        box.scrollTop = 0;
+        syncLyrics(embedPosition, embedDuration);
   }
 
   function syncLyrics(position, duration) {
@@ -1448,18 +1473,18 @@ STUDIO_HTML = """
         if (!lines.length) return;
         const pos = numericTime(position) ?? 0;
         const dur = numericTime(duration) ?? 0;
-        const hasTimedLines = Array.from(lines).some(el => Number.isFinite(Number(el.dataset.start)));
+        const hasTimedLines = Array.from(lines).some(el => datasetTime(el.dataset.start) !== null);
     let idx = -1;
         if (hasTimedLines) {
             lines.forEach((el, i) => {
-                const start = Number(el.dataset.start);
-                if (!Number.isFinite(start) || pos < start) return;
-                const explicitEnd = Number(el.dataset.end);
+                const start = datasetTime(el.dataset.start);
+                if (start === null || pos < start) return;
+                const explicitEnd = datasetTime(el.dataset.end);
                 const next = lines[i + 1];
-                const nextStart = next ? Number(next.dataset.start) : NaN;
-                const end = Number.isFinite(explicitEnd)
+                const nextStart = next ? datasetTime(next.dataset.start) : null;
+                const end = explicitEnd !== null
                     ? explicitEnd
-                    : (Number.isFinite(nextStart) ? nextStart : Number.POSITIVE_INFINITY);
+                    : (nextStart !== null ? nextStart : Number.POSITIVE_INFINITY);
                 if (pos < end + 0.08) idx = i;
             });
         }
@@ -1470,9 +1495,9 @@ STUDIO_HTML = """
       const was = el.classList.contains('active');
       el.classList.toggle('active', i === idx);
       if (i === idx) {
-        const start = Number(el.dataset.start) || 0;
+                const start = datasetTime(el.dataset.start) || 0;
         el.querySelectorAll('.lyr-word').forEach(word => {
-          const offset = Number(word.dataset.offset || 0);
+                    const offset = datasetTime(word.dataset.offset) || 0;
           word.classList.toggle('active', pos >= start + offset);
         });
       } else {
@@ -1480,7 +1505,12 @@ STUDIO_HTML = """
       }
       if (!was && i === idx) changed = true;
     });
-    if (changed && lines[idx]) lines[idx].scrollIntoView({ block: 'center', behavior: 'smooth' });
+        if (changed && lines[idx]) {
+            const target = lines[idx];
+            const targetTop = target.offsetTop - box.offsetTop;
+            const centeredTop = targetTop - (box.clientHeight / 2) + (target.clientHeight / 2);
+            box.scrollTo({ top: Math.max(0, centeredTop), behavior: 'smooth' });
+        }
   }
 
   // ---- Spotify Web API helpers (token personale dell'utente) ----
@@ -1522,21 +1552,56 @@ STUDIO_HTML = """
         }
   }
 
-  function speak(text, audioB64, onend) {
+    async function narrationAudioUrl(i) {
+        const t = TRACKS[i];
+        if (t.audio_url) return t.audio_url;
+        if (audioObjectUrls.has(i)) return audioObjectUrls.get(i);
+        if (t.audio_b64) {
+            t.audio_url = 'data:audio/mpeg;base64,' + t.audio_b64;
+            return t.audio_url;
+        }
+        const text = (t.speech || '').trim();
+        if (!text || !TTS_ENDPOINT || !TTS_TOKEN) return '';
+
+        const response = await fetch(TTS_ENDPOINT, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Sonder-TTS-Token': TTS_TOKEN
+            },
+            body: JSON.stringify({ text })
+        });
+        if (!response.ok) throw new Error('tts_' + response.status);
+        const blob = await response.blob();
+        const url = URL.createObjectURL(blob);
+        audioObjectUrls.set(i, url);
+        return url;
+    }
+
+    async function speak(i, onend) {
     // Stop anything currently playing.
     if (currentAudio) { try { currentAudio.pause(); } catch (e) {} currentAudio = null; }
 
-    if (audioB64) {
-      const audio = new Audio('data:audio/mpeg;base64,' + audioB64);
+        try {
+            const audioUrl = await narrationAudioUrl(i);
+            if (current !== i) return;
+            if (!audioUrl) {
+                setStatus('ElevenLabs audio unavailable');
+                onend && onend();
+                return;
+            }
+            setStatus('🗣️ Narrating…');
+            const audio = new Audio(audioUrl);
       currentAudio = audio;
       audio.onended = () => { currentAudio = null; onend && onend(); };
       audio.onerror = () => { currentAudio = null; onend && onend(); };
       audio.play().catch(() => { currentAudio = null; onend && onend(); });
       return;
+        } catch (e) {
+            currentAudio = null;
+            setStatus('ElevenLabs audio unavailable');
+            onend && onend();
     }
-
-    setStatus('ElevenLabs audio unavailable');
-    onend && onend();
   }
 
   async function startSong(i, seq) {
@@ -1567,13 +1632,13 @@ STUDIO_HTML = """
     }
   }
 
-  function runTrack(i, withVoice, seq) {
+    async function runTrack(i, withVoice, seq) {
     current = i;
     highlight(i);
     showCenter(i);
     if (withVoice) {
-      setStatus('🗣️ Narrating…');
-      speak(TRACKS[i].speech, TRACKS[i].audio_b64 || '', () => startSong(i, seq));
+            setStatus('🗣️ Preparing narration…');
+            await speak(i, () => startSong(i, seq));
     }
   }
 
@@ -1635,8 +1700,8 @@ STUDIO_HTML = """
     function onState(state) {
         if (!state || !state.data) return;
         const d = state.data;
-        embedPosition = typeof d.position === 'number' ? d.position : embedPosition;
-        embedDuration = typeof d.duration === 'number' ? d.duration : embedDuration;
+        embedPosition = typeof d.position === 'number' ? (numericTime(d.position) ?? embedPosition) : embedPosition;
+        embedDuration = typeof d.duration === 'number' ? (numericTime(d.duration) ?? embedDuration) : embedDuration;
         embedPaused = !!d.isPaused;
         if (!embedPaused) lastPlaybackUpdate = performance.now();
         if (!embedPaused && embedPosition > 0) embedPlayed = true;
@@ -1650,7 +1715,7 @@ STUDIO_HTML = """
 
     setInterval(() => {
         if (current < 0 || embedPaused) return;
-        const elapsed = lastPlaybackUpdate ? (performance.now() - lastPlaybackUpdate) : 0;
+        const elapsed = lastPlaybackUpdate ? ((performance.now() - lastPlaybackUpdate) / 1000) : 0;
         syncLyrics(embedPosition + elapsed, embedDuration);
     }, 180);
 
@@ -1675,6 +1740,15 @@ STUDIO_HTML = """
 def render_studio_component(studio: dict) -> None:
     """Renderizza la regia a 3 colonne con voce ElevenLabs e player Spotify per-utente."""
     tracks = studio.get("tracks", [])
+    tts_endpoint = ""
+    tts_token = ""
+    if getattr(settings, "elevenlabs_ready", False):
+        try:
+            tts_info = ensure_tts_server()
+            tts_endpoint = tts_info.endpoint
+            tts_token = tts_info.token
+        except TTSServerError as exc:
+            add_llm_log("ElevenLabs TTS endpoint failed", str(exc))
     payload = [
         {
             "title": t.get("title", ""),
@@ -1691,6 +1765,7 @@ def render_studio_component(studio: dict) -> None:
             "track_id": t.get("track_id", ""),
             "album": t.get("album", ""),
             "audio_db_fact": t.get("audio_db_fact", ""),
+            "audio_db_text": t.get("audio_db_text", ""),
         }
         for t in tracks
     ]
@@ -1703,6 +1778,8 @@ def render_studio_component(studio: dict) -> None:
         STUDIO_HTML.replace("__TRACKS__", tracks_json)
         .replace("__PLAYLIST__", playlist_name)
         .replace("__TOKEN__", token_json)
+        .replace("__TTS_ENDPOINT__", json.dumps(tts_endpoint))
+        .replace("__TTS_TOKEN__", json.dumps(tts_token))
     )
     components.html(rendered, height=860, scrolling=False)
 
@@ -1932,11 +2009,11 @@ def handle_user_input(prompt: str, lang_name: str, lang_code: str) -> None:
         notes.extend(enrich_tracks_with_audiodb_facts(tracks, lang_code))
         add_llm_log(
             "TheAudioDB enrichment",
-            f"Processed curiosities for {len(tracks)} tracks."
+            f"Processed text context and curiosities for {len(tracks)} tracks."
             + ("\n" + "\n".join(notes) if notes else ""),
         )
 
-    with st.spinner("Rewriting from Musixmatch lyrics..."):
+    with st.spinner("Rewriting from verified music text..."):
         try:
             text, reasoning = teller.compose_musixmatch_response(
                 prompt=prompt,
@@ -1946,7 +2023,7 @@ def handle_user_input(prompt: str, lang_name: str, lang_code: str) -> None:
             )
             add_llm_log(
                 "Response writer",
-                "Composed the assistant answer using only the Musixmatch results provided.",
+                "Composed the assistant answer using Musixmatch results and TheAudioDB text context.",
             )
         except StorytellerError as exc:
             add_llm_log("Response writer failed", user_facing_llm_error(exc))
