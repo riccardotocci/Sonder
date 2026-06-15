@@ -16,6 +16,7 @@ import re
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import pandas as pd
 import streamlit as st
@@ -27,6 +28,7 @@ from core.audiodb_client import AudioDBClient, AudioDBError
 from core.lastfm_client import LastFMClient, LastFMError
 from core.storyteller import Storyteller, StorytellerError
 from core.spotify_client import SpotifyClient, SpotifyError
+from core.elevenlabs_client import ElevenLabsClient, ElevenLabsError
 from core.tts_server import TTSServerError, ensure_tts_server
 from core import spotify_pkce
 
@@ -68,6 +70,97 @@ def _persistent_token_store() -> dict[str, object]:
 def _stay_logged_store() -> dict[str, bool]:
     """Mappa state -> stay_logged; sopravvive al redirect OAuth verso Spotify."""
     return {}
+
+
+def _tts_mode() -> str:
+    """Return the configured ElevenLabs delivery mode."""
+    return str(getattr(settings, "sonder_tts_mode", "auto") or "auto").strip().lower()
+
+
+def _tts_disabled() -> bool:
+    return _tts_mode() in {"off", "disabled", "none", "false", "0"}
+
+
+def _streamlit_cloud_url_configured() -> bool:
+    urls = [settings.spotify_redirect_uri]
+    try:
+        context_url = str(getattr(getattr(st, "context", None), "url", "") or "")
+    except Exception:
+        context_url = ""
+    if context_url:
+        urls.append(context_url)
+
+    for raw_url in urls:
+        try:
+            hostname = urlparse(raw_url).hostname or ""
+        except Exception:
+            hostname = ""
+        if hostname == "streamlit.app" or hostname.endswith(".streamlit.app"):
+            return True
+    return False
+
+
+def _use_embedded_tts() -> bool:
+    """Use base64 audio in hosted Streamlit, local loopback in dev."""
+    mode = _tts_mode()
+    if mode in {"embedded", "embed", "base64", "cloud", "streamlit"}:
+        return True
+    if mode in {"local", "server", "loopback"}:
+        return False
+    return _streamlit_cloud_url_configured()
+
+
+def _tts_delivery_label() -> str:
+    if _tts_disabled():
+        return "off"
+    return "embedded" if _use_embedded_tts() else "local"
+
+
+def _track_narration_text(track: dict) -> str:
+    primary_text = str(track.get("speech", "") or "").strip()
+    fallback_text = " ".join(
+        str(track.get(key, "") or "").strip()
+        for key in ("musixmatch_speech", "audiodb_speech")
+        if str(track.get(key, "") or "").strip()
+    ).strip()
+    return (primary_text or fallback_text)[:3500]
+
+
+@st.cache_data(show_spinner=False)
+def _elevenlabs_audio_b64(
+    text: str,
+    voice_id: str,
+    model_id: str,
+    output_format: str,
+) -> str:
+    audio = ElevenLabsClient().text_to_speech(
+        text,
+        voice_id=voice_id,
+        model_id=model_id,
+        output_format=output_format,
+    )
+    return base64.b64encode(audio).decode("ascii")
+
+
+def _embed_elevenlabs_audio(tracks: list[dict]) -> None:
+    """Populate audio_b64 for tracks when the browser cannot call localhost."""
+    voice_id = settings.elevenlabs_voice_id or ElevenLabsClient.DEFAULT_VOICE
+    for index, track in enumerate(tracks):
+        if track.get("audio_b64"):
+            continue
+        text = _track_narration_text(track)
+        if not text:
+            continue
+        try:
+            track["audio_b64"] = _elevenlabs_audio_b64(
+                text,
+                voice_id,
+                ElevenLabsClient.DEFAULT_MODEL,
+                ElevenLabsClient.DEFAULT_OUTPUT_FORMAT,
+            )
+        except ElevenLabsError as exc:
+            title = str(track.get("title", f"track {index + 1}") or f"track {index + 1}")
+            add_llm_log("ElevenLabs TTS", f"Audio embedding failed for {title}: {exc}")
 
 # Lingua UI -> (nome per il prompt LLM, codice biografia TheAudioDB)
 # "🌐 Auto" => il modello riconosce automaticamente la lingua dell'utente.
@@ -1431,10 +1524,19 @@ def build_studio(
         t.setdefault("musixmatch_speech", "")
         t.setdefault("audiodb_speech", "")
 
-    if getattr(settings, "elevenlabs_ready", False):
+    if getattr(settings, "elevenlabs_ready", False) and not _tts_disabled():
+        if _use_embedded_tts():
+            tts_message = "Narration audio will be generated server-side and embedded for Streamlit Cloud."
+        else:
+            tts_message = "Narration audio will be generated on demand through the local TTS endpoint."
         add_llm_log(
             "ElevenLabs TTS",
-            "Narration audio will be generated on demand when playback starts.",
+            tts_message,
+        )
+    elif getattr(settings, "elevenlabs_ready", False):
+        add_llm_log(
+            "ElevenLabs TTS",
+            "SONDER_TTS_MODE disables narration audio.",
         )
     else:
         add_llm_log(
@@ -1623,6 +1725,7 @@ STUDIO_HTML = """
   const TOKEN = __TOKEN__;
     const TTS_ENDPOINT = __TTS_ENDPOINT__;
     const TTS_TOKEN = __TTS_TOKEN__;
+    const TTS_MODE = __TTS_MODE__;
   const PLAYLIST_NAME = __PLAYLIST__;
   const PALETTE = ["#ff2d78","#f97316","#22d3ee","#facc15","#c2410c","#34d399"];
 
@@ -1663,6 +1766,7 @@ STUDIO_HTML = """
 
     ttsLog('component initialized', {
         tracks: TRACKS.length,
+        mode: TTS_MODE,
         endpoint: TTS_ENDPOINT || '(empty)',
         hasToken: Boolean(TTS_TOKEN),
         hasSpotifyToken: Boolean(TOKEN)
@@ -1996,7 +2100,7 @@ STUDIO_HTML = """
         }
         if (!TTS_ENDPOINT || !TTS_TOKEN) {
             ttsLog('blocked before fetch: missing endpoint or token', { endpoint: TTS_ENDPOINT || '', hasToken: Boolean(TTS_TOKEN) });
-            throw new Error('elevenlabs_not_configured');
+            throw new Error(TTS_MODE === 'embedded' ? 'tts_embedded_unavailable' : 'elevenlabs_not_configured');
         }
 
         ttsLog('fetch POST /tts', { endpoint: TTS_ENDPOINT, textChars: text.length, preview: text.slice(0, 80) });
@@ -2027,6 +2131,7 @@ STUDIO_HTML = """
     function ttsStatusMessage(error) {
         const message = String(error && error.message || error || '');
         if (message.includes('elevenlabs_not_configured')) return 'ElevenLabs key missing';
+        if (message.includes('tts_embedded_unavailable')) return 'ElevenLabs audio unavailable';
         if (message.includes('missing_text')) return 'Narration text missing';
         if (message.includes('forbidden')) return 'TTS token rejected';
         if (message.includes('NetworkError') || message.includes('Failed to fetch')) return 'TTS server unreachable';
@@ -2198,13 +2303,18 @@ def render_studio_component(studio: dict) -> None:
     tracks = studio.get("tracks", [])
     tts_endpoint = ""
     tts_token = ""
-    if getattr(settings, "elevenlabs_ready", False):
-        try:
-            tts_info = ensure_tts_server()
-            tts_endpoint = tts_info.endpoint
-            tts_token = tts_info.token
-        except TTSServerError as exc:
-            add_llm_log("ElevenLabs TTS endpoint failed", str(exc))
+    tts_label = _tts_delivery_label()
+    if getattr(settings, "elevenlabs_ready", False) and not _tts_disabled():
+        if _use_embedded_tts():
+            with st.spinner("Generating ElevenLabs narration audio..."):
+                _embed_elevenlabs_audio(tracks)
+        else:
+            try:
+                tts_info = ensure_tts_server()
+                tts_endpoint = tts_info.endpoint
+                tts_token = tts_info.token
+            except TTSServerError as exc:
+                add_llm_log("ElevenLabs TTS endpoint failed", str(exc))
     payload = [
         {
             "title": t.get("title", ""),
@@ -2238,6 +2348,7 @@ def render_studio_component(studio: dict) -> None:
         .replace("__TOKEN__", token_json)
         .replace("__TTS_ENDPOINT__", json.dumps(tts_endpoint))
         .replace("__TTS_TOKEN__", json.dumps(tts_token))
+        .replace("__TTS_MODE__", json.dumps(tts_label))
     )
     components.html(rendered, height=860, scrolling=False)
 

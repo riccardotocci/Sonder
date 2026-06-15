@@ -83,6 +83,10 @@ class Settings:
     elevenlabs_voice_id: str = field(
         default_factory=lambda: _env("ELEVENLABS_VOICE_ID", "JBFqnCBsd6RMkjVDRZzb")
     )
+    # auto = local endpoint in dev, embedded audio on hosted Streamlit URLs.
+    sonder_tts_mode: str = field(
+        default_factory=lambda: _env("SONDER_TTS_MODE", "auto").lower()
+    )
 
     # --- Spotify ---
     # Solo il Client ID e' richiesto (pubblico) per il flusso PKCE per-utente:
