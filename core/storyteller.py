@@ -114,96 +114,78 @@ il tuo rifiuto in-character breve e senza playlist. Non rispondere mai a domande
 cucina, sport, politica, tecnologia o qualsiasi altro argomento non musicale."""
 
 
-MUSIXMATCH_SEARCH_TEMPLATE = """Leggi la conversazione e prepara SOLO query utili per cercare brani reali su Musixmatch.
+MUSIXMATCH_SEARCH_TEMPLATE = """Prepara query Musixmatch concise. Rispondi SOLO JSON.
 
-Regola lingua: {language_rule}
+Lingua: {language_rule}
 
-Contesto opzionale:
+Contesto:
 {context}
 
-Conversazione recente:
+Messaggi:
 {messages}
 
-Devi decidere se l'ultimo messaggio e' musicale e se richiede una ricerca di brani/testi.
-Non proporre canzoni, artisti o playlist dalla tua memoria.
+Regole:
+- Se l'utente cita titolo/artista, usa q_track e q_artist.
+- Per temi o mood crea 2-4 query brevi, concrete, cercabili.
+- Metti parole da testo in q_lyrics; metti genere/lingua/periodo in q.
+- Evita parole inutili: canzoni, brani, playlist, consigliami.
+- Non inventare titoli o artisti.
+- reason: massimo 6 parole.
 
-Come scrivere query buone:
-- Se l'utente cita esplicitamente titolo e artista, estraili in q_track e q_artist.
-- Se chiede brani per tema, mood, genere, epoca o parole del testo, NON usare frasi generiche tipo "canzoni italiane cuore spezzato".
-- Trasforma il tema in 2-4 query brevi, diverse tra loro e cercabili: parole concrete, immagini emotive, frasi che potrebbero comparire nel testo, sinonimi naturali.
-- Usa q_lyrics per parole o immagini del testo; usa q solo per termini di catalogo utili (genere, scena, lingua, periodo, artista).
-- Conserva vincoli importanti come lingua, paese, epoca o genere dentro la query piu' adatta, ma evita parole di servizio come "canzoni", "brani", "playlist", "consigliami".
-- Ogni reason deve spiegare il criterio emotivo o testuale in massimo 12 parole.
-
-Rispondi SOLO con JSON valido:
+Schema:
 {{
   "music_related": true,
   "needs_search": true,
-  "limit": 8,
+    "limit": 4,
   "queries": [
     {{
       "q": "",
       "q_track": "",
       "q_artist": "",
       "q_lyrics": "",
-      "reason": "<max 12 parole>"
+            "reason": ""
     }}
   ]
 }}
-Usa limit tra 1 e 8. Se non serve cercare brani/testi, usa needs_search=false e queries=[]."""
+Usa limit 1-4. Se non serve cercare, needs_search=false e queries=[]."""
 
 
-MUSIXMATCH_RESPONSE_TEMPLATE = """Richiesta utente:
-\"\"\"
-{prompt}
-\"\"\"
+MUSIXMATCH_RESPONSE_TEMPLATE = """Richiesta: {prompt}
 
-Contesto opzionale:
-{context}
-
-Risultati reali trovati e contesto verificato:
+Risultati:
 {tracks}
 
-Scrivi una risposta in {language}, in Markdown pulito.
-Usa solo i brani presenti nei risultati.
-Non aggiungere altri titoli o artisti.
-Se e' presente testo/contesto TheAudioDB, usalo come fonte principale per motivare il brano.
-Se sono presenti testi Musixmatch o richsync, usali come supporto e riscrivi/parafrasa il significato invece di copiare lunghi passaggi.
-Se e' presente una curiosita' TheAudioDB, inseriscila in modo naturale nella risposta.
-Se non ci sono risultati, dillo chiaramente e suggerisci una query piu' precisa."""
+Scrivi in {language}, Markdown pulito.
+Usa solo questi brani. Niente titoli extra.
+Per ogni brano: una frase puntuale sul perche' risponde alla richiesta.
+Dai priorita' a TheAudioDB; usa Musixmatch solo come supporto.
+Parafrasa, non copiare versi lunghi.
+Se non ci sono risultati, chiedi una richiesta piu' precisa."""
 
 
-STUDIO_BRIEF_TEMPLATE = """Stai preparando un'esperienza audio-narrata ("radio d'autore") \
-per questa playlist, nata dalla richiesta dell'utente: "{title}".
-
-Per ogni brano sono forniti (quando disponibili) la biografia dell'artista e un estratto del testo.
-Usali per rendere ogni narrazione specifica, profonda e ancorata a dettagli reali.
-Se e' presente testo/contesto TheAudioDB, dagli priorita' e integralo con naturalezza nel discorso senza trasformarlo in elenco.
+STUDIO_BRIEF_TEMPLATE = """Crea una regia audio concisa per: "{title}".
 
 Brani (nell'ordine):
 {tracks}
 
-Per OGNI brano scrivi un "discorso" parlato: NON un testo da leggere a video, ma parole \
-pensate per essere DETTE ad alta voce da una voce narrante (50-90 parole, in {language}). \
-Sii evocativo: cita immagini concrete dal testo o dalla storia dell'artista, spiega il mood \
-e perché il brano si lega agli altri nella playlist. Niente elenchi, solo prosa fluida adatta \
-alla sintesi vocale.
+Per ogni brano scrivi una frase parlata di 35-55 parole in {language}.
+Usa dettagli forniti, soprattutto TheAudioDB. Non inventare.
 
-Rispondi SOLO con un oggetto JSON valido (nessun testo prima o dopo) in questo formato:
+Rispondi SOLO JSON valido:
 {{
   "narrations": [
     {{
       "title": "...",
       "artist": "...",
-      "speech": "<discorso parlato in {language}>",
-      "mood": "<1-3 parole in {language}>",
-      "origin": "<città, paese d'origine dell'artista>",
+            "speech": "...",
+            "mood": "...",
+            "origin": "...",
       "lat": <latitudine decimale dell'origine>,
       "lng": <longitudine decimale dell'origine>
     }}
   ],
-  "summary": "<paragrafo in {language} che riassume mood e filo conduttore della playlist>",
-  "moods": ["<mood1>", "<mood2>", "..."]
+    "summary": "...",
+    "moods": ["..."]
 }}
 L'array "narrations" deve avere ESATTAMENTE {n} elementi, nello stesso ordine dei brani."""
 
@@ -316,14 +298,14 @@ class Storyteller:
             bio = (t.get("_bio") or t.get("bio") or "").strip()
             lyrics = (t.get("lyrics") or "").strip()
             if bio:
-                bio_short = bio[:400] + ("…" if len(bio) > 400 else "")
+                bio_short = bio[:180] + ("…" if len(bio) > 180 else "")
                 line += f'\n   Biografia: {bio_short}'
             if lyrics:
-                lyrics_short = lyrics[:500] + ("…" if len(lyrics) > 500 else "")
+                lyrics_short = lyrics[:180] + ("…" if len(lyrics) > 180 else "")
                 line += f'\n   Testo (estratto): {lyrics_short}'
             audiodb_text = (t.get("audio_db_text") or t.get("audiodb_text") or "").strip()
             if audiodb_text:
-                audiodb_short = audiodb_text[:700] + ("…" if len(audiodb_text) > 700 else "")
+                audiodb_short = audiodb_text[:240] + ("…" if len(audiodb_text) > 240 else "")
                 line += f'\n   Testo/contesto TheAudioDB: {audiodb_short}'
             fact = (t.get("audio_db_fact") or t.get("audiodb_fact") or "").strip()
             if fact and fact != audiodb_text:
@@ -375,7 +357,7 @@ class Storyteller:
             return {
                 "music_related": True,
                 "needs_search": True,
-                "limit": 8,
+                "limit": 4,
                 "queries": [{"q": last_user, "q_track": "", "q_artist": "", "q_lyrics": "", "reason": ""}],
             }
         def as_bool(value: Any, default: bool) -> bool:
@@ -389,10 +371,10 @@ class Storyteller:
                     return False
             return default
         try:
-            limit = int(data.get("limit", 8))
+            limit = int(data.get("limit", 4))
         except (TypeError, ValueError):
-            limit = 8
-        limit = max(1, min(limit, 8))
+            limit = 4
+        limit = max(1, min(limit, 4))
         queries: list[dict[str, str]] = []
         raw_queries = data.get("queries") or []
         if isinstance(raw_queries, list):
@@ -434,22 +416,22 @@ class Storyteller:
                 line += f'\n   Motivo ricerca: {t.get("reason", "")}'
             audiodb_text = (t.get("audio_db_text") or t.get("audiodb_text") or "").strip()
             if audiodb_text:
-                audiodb_short = audiodb_text[:900] + ("…" if len(audiodb_text) > 900 else "")
-                line += f'\n   Testo/contesto TheAudioDB: {audiodb_short}'
+                audiodb_short = audiodb_text[:260] + ("…" if len(audiodb_text) > 260 else "")
+                line += f'\n   TheAudioDB: {audiodb_short}'
             richsync = t.get("richsync") or []
             if isinstance(richsync, list) and richsync:
                 line += "\n   Richsync Musixmatch: disponibile"
             lyrics = (t.get("lyrics") or "").strip()
             if lyrics:
-                lyrics_short = lyrics[:700] + ("…" if len(lyrics) > 700 else "")
+                lyrics_short = lyrics[:220] + ("…" if len(lyrics) > 220 else "")
                 line += f'\n   Testo Musixmatch: {lyrics_short}'
             fact = (t.get("audio_db_fact") or t.get("audiodb_fact") or "").strip()
             if fact and fact != audiodb_text:
-                line += f'\n   Curiosita TheAudioDB: {fact}'
+                fact_short = fact[:160] + ("…" if len(fact) > 160 else "")
+                line += f'\n   Nota TheAudioDB: {fact_short}'
             track_parts.append(line)
         user = MUSIXMATCH_RESPONSE_TEMPLATE.format(
             prompt=prompt,
-            context=context.strip() or "(nessuno)",
             tracks="\n\n".join(track_parts) if track_parts else "(nessun risultato)",
             language=language,
         )

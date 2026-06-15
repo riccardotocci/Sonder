@@ -12,6 +12,7 @@ import base64
 import html
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -538,11 +539,38 @@ def fetch_audiodb_track_text(
     lang_code: str = "EN",
 ) -> str:
     """Recupera contesto TheAudioDB anche con versioni vecchie del client."""
-    def clean(text: str, limit: int = 900) -> str:
+    def clean(text: str, limit: int = 360) -> str:
         text = " ".join((text or "").split())
         if len(text) <= limit:
             return text
         return text[:limit].rsplit(" ", 1)[0].rstrip(".,;:") + "..."
+
+    def unique(values: list[str]) -> list[str]:
+        seen: set[str] = set()
+        result: list[str] = []
+        for value in values:
+            normalized = " ".join((value or "").split()).strip(" -–—")
+            key = normalized.casefold()
+            if normalized and key not in seen:
+                seen.add(key)
+                result.append(normalized)
+        return result
+
+    def artist_variants(value: str) -> list[str]:
+        base = " ".join((value or "").split())
+        stripped = re.split(r"\s+(?:feat\.?|ft\.?|featuring)\s+", base, maxsplit=1, flags=re.IGNORECASE)[0]
+        return unique([base, stripped])
+
+    def title_variants(value: str) -> list[str]:
+        base = " ".join((value or "").split())
+        no_brackets = re.sub(r"\s*[\(\[].*?[\)\]]", "", base).strip()
+        no_dash_suffix = re.sub(
+            r"\s+[-–—]\s+(?:remaster(?:ed)?|live|radio edit|single version|album version|explicit|clean|mono|stereo).*$",
+            "",
+            base,
+            flags=re.IGNORECASE,
+        ).strip()
+        return unique([base, no_brackets, no_dash_suffix])
 
     def first_present(data: dict[str, Any], fields: tuple[str, ...]) -> str:
         for field_name in fields:
@@ -570,20 +598,29 @@ def fetch_audiodb_track_text(
     get_track_text = getattr(client, "get_track_text", None)
     if callable(get_track_text):
         try:
-            return get_track_text(
+            text = get_track_text(
                 artist=artist,
                 title=title,
                 album=album,
                 language=lang_code,
             )
         except TypeError:
-            return get_track_text(
+            text = get_track_text(
                 artist=artist,
                 title=title,
                 language=lang_code,
             )
+        if text:
+            return clean(text)
 
-    track = client.search_track(artist, title) if artist.strip() and title.strip() else None
+    track = None
+    for artist_candidate in artist_variants(artist):
+        for title_candidate in title_variants(title):
+            track = client.search_track(artist_candidate, title_candidate)
+            if track:
+                break
+        if track:
+            break
     if track:
         lyrics = first_present(
             track,
@@ -606,7 +643,11 @@ def fetch_audiodb_track_text(
         if pieces:
             return clean("TheAudioDB associa il brano a " + ", ".join(pieces) + ".")
 
-    album_data = client.search_album(artist, album) if artist.strip() and album.strip() else None
+    album_data = None
+    for artist_candidate in artist_variants(artist):
+        album_data = client.search_album(artist_candidate, album) if album.strip() else None
+        if album_data:
+            break
     if album_data:
         description = localized_description(album_data)
         if description:
@@ -690,6 +731,27 @@ def render_track_cards(tracks: list[dict[str, str]]) -> None:
             f'<b>{t.get("artist", "")} — {t.get("title", "")}</b>{reason}</div>',
             unsafe_allow_html=True,
         )
+
+
+def fallback_track_response(prompt: str, tracks: list[dict[str, Any]], language: str) -> str:
+    if not tracks:
+        return "Non ho trovato risultati solidi. Prova con un tema, un artista o una lingua piu' precisa."
+
+    intro = "Ecco una selezione essenziale basata sui risultati trovati:" if language == "Italiano" else "Here is a concise selection from the results found:"
+    lines = [intro]
+    for t in tracks:
+        title = str(t.get("title", "")).strip() or "Untitled"
+        artist = str(t.get("artist", "")).strip() or "Unknown artist"
+        reason = str(t.get("reason", "")).strip()
+        audiodb_text = str(t.get("audio_db_text") or t.get("audio_db_fact") or "").strip()
+        lyrics = str(t.get("lyrics", "")).strip()
+        source = audiodb_text or lyrics or reason
+        source = " ".join(source.split())
+        if len(source) > 180:
+            source = source[:180].rsplit(" ", 1)[0].rstrip(".,;:") + "..."
+        detail = source or reason or prompt
+        lines.append(f'- **{artist} - {title}**: {detail}')
+    return "\n".join(lines)
 
 
 def user_facing_llm_error(exc: Exception) -> str:
@@ -2121,11 +2183,12 @@ def handle_user_input(prompt: str, lang_name: str, lang_code: str) -> None:
             )
         except StorytellerError as exc:
             add_llm_log("Response writer failed", user_facing_llm_error(exc))
-            st.session_state["messages"].append(
-                {"role": "assistant", "content": user_facing_llm_error(exc), "tracks": tracks, "llm_log": current_llm_log()}
+            text = fallback_track_response(prompt, tracks, lang_name)
+            reasoning = "Fallback response generated from verified search results after LLM writer failure."
+            add_llm_log(
+                "Response fallback",
+                "Used a concise local response built from Musixmatch and TheAudioDB results.",
             )
-            st.session_state["studio"] = build_studio(prompt, tracks, lang_name, lang_code) if tracks else empty_studio(prompt)
-            return
 
     if notes:
         text = text + "\n\n" + "\n".join(f"> {note}" for note in notes)
