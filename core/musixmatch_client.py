@@ -8,6 +8,7 @@ un disclaimer di copyright. Il client espone comunque l'intero corpo restituito.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -31,6 +32,7 @@ class Track:
     artist_name: str
     album_name: str = ""
     has_lyrics: bool = False
+    has_richsync: bool = False
     explicit: bool = False
     genres: list[str] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
@@ -54,6 +56,7 @@ class Track:
             artist_name=data.get("artist_name", ""),
             album_name=data.get("album_name", ""),
             has_lyrics=bool(data.get("has_lyrics", 0)),
+            has_richsync=bool(data.get("has_richsync", 0)),
             explicit=bool(data.get("explicit", 0)),
             genres=genres,
             raw=data,
@@ -78,6 +81,33 @@ class Lyrics:
         return not self.body.strip()
 
 
+@dataclass
+class RichSync:
+    body: list[dict[str, Any]] = field(default_factory=list)
+    raw_body: str = ""
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.body
+
+    @property
+    def text(self) -> str:
+        lines: list[str] = []
+        for item in self.body:
+            line = item.get("l") or item.get("line") or item.get("text") or ""
+            if isinstance(line, list):
+                pieces = []
+                for token in line:
+                    if isinstance(token, dict):
+                        pieces.append(str(token.get("c") or token.get("text") or ""))
+                    else:
+                        pieces.append(str(token))
+                line = "".join(pieces).strip() or " ".join(pieces).strip()
+            if isinstance(line, str) and line.strip():
+                lines.append(line.strip())
+        return "\n".join(lines)
+
+
 class MusixmatchClient:
     """Wrapper minimale e robusto sulle API REST di Musixmatch."""
 
@@ -92,7 +122,7 @@ class MusixmatchClient:
     def _request(self, endpoint: str, **params: Any) -> dict[str, Any]:
         if not self.api_key:
             raise MusixmatchError(
-                "Chiave API Musixmatch mancante. Imposta MUSIXMATCH_API_KEY nel file .env"
+                "Chiave API Musixmatch mancante. Imposta MUSIXMATCH_API_KEY o MXM_KEY nel file .env"
             )
 
         params["apikey"] = self.api_key
@@ -132,6 +162,8 @@ class MusixmatchClient:
         *,
         track: Optional[str] = None,
         artist: Optional[str] = None,
+        lyrics: Optional[str] = None,
+        has_lyrics: bool = False,
         limit: int = 10,
     ) -> list[Track]:
         """Cerca tracce per testo libero e/o titolo/artista."""
@@ -146,6 +178,10 @@ class MusixmatchClient:
             params["q_track"] = track
         if artist:
             params["q_artist"] = artist
+        if lyrics:
+            params["q_lyrics"] = lyrics
+        if has_lyrics:
+            params["f_has_lyrics"] = 1
 
         body = self._request("track.search", **params)
         track_list = body.get("track_list", []) or []
@@ -155,6 +191,10 @@ class MusixmatchClient:
         """Recupera il testo a partire dall'ID traccia."""
         body = self._request("track.lyrics.get", track_id=track_id)
         return self._parse_lyrics(body)
+
+    def get_richsync(self, track_id: int) -> RichSync:
+        body = self._request("track.richsync.get", track_id=track_id)
+        return self._parse_richsync(body)
 
     def match_lyrics(self, track: str, artist: str) -> Lyrics:
         """Recupera il testo combinando titolo + artista (fuzzy matcher)."""
@@ -169,6 +209,12 @@ class MusixmatchClient:
 
     def find_lyrics(self, track: str, artist: str) -> tuple[Optional[Track], Lyrics]:
         """Helper: prova il matcher, poi ripiega sulla ricerca + lyrics per ID."""
+        matches = self.search_tracks(track=track, artist=artist, limit=1)
+        if matches:
+            best = matches[0]
+            lyrics = self.get_lyrics(best.track_id) if best.has_lyrics else Lyrics(body="")
+            return best, lyrics
+
         try:
             lyrics = self.match_lyrics(track, artist)
             if not lyrics.is_empty:
@@ -182,6 +228,21 @@ class MusixmatchClient:
         best = matches[0]
         lyrics = self.get_lyrics(best.track_id) if best.has_lyrics else Lyrics(body="")
         return best, lyrics
+
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _parse_richsync(body: dict[str, Any]) -> RichSync:
+        richsync = body.get("richsync", {}) or {}
+        raw_body = (richsync.get("richsync_body") or "").strip()
+        parsed: list[dict[str, Any]] = []
+        if raw_body:
+            try:
+                data = json.loads(raw_body)
+                if isinstance(data, list):
+                    parsed = [item for item in data if isinstance(item, dict)]
+            except (TypeError, ValueError, json.JSONDecodeError):
+                parsed = []
+        return RichSync(body=parsed, raw_body=raw_body)
 
     # ------------------------------------------------------------------ #
     @staticmethod

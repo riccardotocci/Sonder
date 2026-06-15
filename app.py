@@ -13,6 +13,7 @@ import html
 import json
 import time
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import streamlit as st
@@ -137,6 +138,20 @@ REFUSALS: dict[str, str] = {
     "한국어":   "*그건 제 영역 밖입니다.* 저는 음표, 가사, 음향의 그림자로 만들어졌습니다 — 음악에 대해 이야기하면 어디든 따라가겠습니다.",
     "العربية":  "*هذا خارج نطاق تخصصي.* أنا مصنوع من نوتات موسيقية وكلمات وظلال صوتية — تحدّث إليّ عن الموسيقى وسأتبعك أينما ذهبت.",
 }
+
+LLM_RETRY_MESSAGE = "Please retry."
+LLM_RETRY_ERROR_HINTS = (
+    "rate out of bandwidth",
+    "rate out of widthband",
+    "out of bandwidth",
+    "widthband",
+    "bandwidth",
+    "rate limit",
+    "rate limited",
+    "too many requests",
+    "429",
+    "quota",
+)
 
 # Palette neon "studio tecnologico", ciclata per indice su pill e card.
 PALETTE = ["#ff2d78", "#f97316", "#22d3ee", "#facc15", "#c2410c", "#34d399"]
@@ -508,11 +523,23 @@ def fetch_song_context(title: str, artist: str, lang_code: str) -> tuple[str, li
 
     if title and settings.musixmatch_ready:
         try:
-            track, lyrics = MusixmatchClient().find_lyrics(title, artist)
-            real_artist = artist or (track.artist_name if track else "")
-            parts.append(f"Brano: «{title}» di {real_artist or 'artista sconosciuto'}")
-            if lyrics.body:
-                parts.append("Testo (Musixmatch):\n" + lyrics.body)
+            mx_client = MusixmatchClient()
+            matches = mx_client.search_tracks(track=title, artist=artist, has_lyrics=True, limit=1)
+            if matches:
+                track = matches[0]
+                lyrics_text, richsync_body = fetch_musixmatch_text(
+                    mx_client,
+                    track.track_id,
+                    track.has_lyrics,
+                    track.has_richsync,
+                )
+                parts.append(f"Brano: «{track.track_name or title}» di {track.artist_name or artist or 'artista sconosciuto'}")
+                if richsync_body:
+                    parts.append("Richsync word-level (Musixmatch): disponibile")
+                if lyrics_text:
+                    parts.append("Testo (Musixmatch):\n" + lyrics_text)
+            else:
+                notes.append("Musixmatch: no track found.")
         except MusixmatchError as exc:
             notes.append(f"Musixmatch: {exc}")
     elif title:
@@ -550,6 +577,111 @@ def render_track_cards(tracks: list[dict[str, str]]) -> None:
             f'<b>{t.get("artist", "")} — {t.get("title", "")}</b>{reason}</div>',
             unsafe_allow_html=True,
         )
+
+
+def user_facing_llm_error(exc: Exception) -> str:
+    raw = str(exc).lower()
+    if any(hint in raw for hint in LLM_RETRY_ERROR_HINTS):
+        return LLM_RETRY_MESSAGE
+    return f"⚠️ LLM: {exc}"
+
+
+def fetch_musixmatch_text(
+    mx_client: MusixmatchClient,
+    track_id: int,
+    has_lyrics: bool,
+    has_richsync: bool,
+) -> tuple[str, list[dict[str, Any]]]:
+    lyrics_text = ""
+    richsync_body: list[dict[str, Any]] = []
+    if has_richsync:
+        try:
+            richsync = mx_client.get_richsync(track_id)
+            if richsync and not richsync.is_empty:
+                richsync_body = richsync.body
+                lyrics_text = richsync.text
+        except MusixmatchError:
+            pass
+    if not lyrics_text and has_lyrics:
+        try:
+            lyrics = mx_client.get_lyrics(track_id)
+            lyrics_text = lyrics.body if lyrics and not lyrics.is_empty else ""
+        except MusixmatchError:
+            lyrics_text = ""
+    return lyrics_text, richsync_body
+
+
+def musixmatch_track_payload(
+    mx_client: MusixmatchClient,
+    track: Any,
+    reason: str = "",
+) -> dict[str, Any]:
+    lyrics_text, richsync_body = fetch_musixmatch_text(
+        mx_client,
+        track.track_id,
+        track.has_lyrics,
+        track.has_richsync,
+    )
+    return {
+        "title": track.track_name,
+        "artist": track.artist_name,
+        "album": track.album_name,
+        "track_id": str(track.track_id),
+        "reason": reason,
+        "lyrics": lyrics_text,
+        "richsync": richsync_body,
+        "has_lyrics": track.has_lyrics,
+        "has_richsync": track.has_richsync,
+    }
+
+
+def search_musixmatch_from_plan(plan: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
+    if not settings.musixmatch_ready:
+        return [], ["Musixmatch not configured: set `MUSIXMATCH_API_KEY` or `MXM_KEY`."]
+
+    notes: list[str] = []
+    results: list[dict[str, Any]] = []
+    seen: set[int] = set()
+    mx_client = MusixmatchClient()
+    try:
+        limit = int(plan.get("limit", 8))
+    except (TypeError, ValueError):
+        limit = 8
+    limit = max(1, min(limit, 8))
+
+    queries = plan.get("queries") or []
+    if not isinstance(queries, list):
+        queries = []
+    for query in queries:
+        if len(results) >= limit or not isinstance(query, dict):
+            continue
+        q = str(query.get("q", "")).strip()
+        q_track = str(query.get("q_track", "")).strip()
+        q_artist = str(query.get("q_artist", "")).strip()
+        q_lyrics = str(query.get("q_lyrics", "")).strip()
+        reason = str(query.get("reason", "")).strip()
+        if not any((q, q_track, q_artist, q_lyrics)):
+            continue
+        try:
+            matches = mx_client.search_tracks(
+                query=q or None,
+                track=q_track or None,
+                artist=q_artist or None,
+                lyrics=q_lyrics or None,
+                has_lyrics=True,
+                limit=limit - len(results),
+            )
+        except MusixmatchError as exc:
+            notes.append(f"Musixmatch: {exc}")
+            continue
+        for match in matches:
+            if match.track_id in seen:
+                continue
+            seen.add(match.track_id)
+            results.append(musixmatch_track_payload(mx_client, match, reason=reason))
+            if len(results) >= limit:
+                break
+    return results, notes
 
 
 def create_spotify_playlist(tracks: list[dict[str, str]], name: str) -> None:
@@ -658,11 +790,18 @@ def render_spotify_login(container) -> None:
     if st.session_state.get("sp_auth_error"):
         container.error(f"Login Spotify: {st.session_state['sp_auth_error']}")
 
-    if "localhost" in settings.spotify_redirect_uri:
+    redirect_uri = settings.spotify_redirect_uri
+    if "localhost" in redirect_uri or "127.0.0.1" in redirect_uri:
         container.warning(
-            "Spotify no longer accepts `localhost` as Redirect URI: use "
-            "`http://127.0.0.1:8501` in `SPOTIFY_REDIRECT_URI` (and in the "
-            "Spotify dashboard), then open the app from that address."
+            "For the deployed app, set `SPOTIFY_REDIRECT_URI` to "
+            "`https://sonder.streamlit.app/` in Streamlit Secrets and add "
+            "that exact Redirect URI in the Spotify dashboard. Use "
+            "`http://127.0.0.1:8501` only when running locally."
+        )
+    elif not redirect_uri.startswith("https://"):
+        container.warning(
+            "On Streamlit Cloud, `SPOTIFY_REDIRECT_URI` must be an HTTPS URL "
+            "and must match the Spotify dashboard Redirect URI exactly."
         )
 
     if spotify_token():
@@ -750,25 +889,35 @@ def build_studio(
         #     artista corretto anche per la bio.
         if mx_client and title:
             try:
-                matches = mx_client.search_tracks(track=title, artist=artist, limit=1)
-                if matches:
-                    best = matches[0]
+                track_id = t.get("track_id")
+                best = mx_client.get_track(int(track_id)) if track_id else None
+                if not best:
+                    matches = mx_client.search_tracks(track=title, artist=artist, has_lyrics=True, limit=1)
+                    best = matches[0] if matches else None
+                if best:
                     t["title"] = best.track_name or title
                     t["artist"] = best.artist_name or artist
+                    t["album"] = best.album_name
+                    t["track_id"] = str(best.track_id)
+                    t["has_lyrics"] = best.has_lyrics
+                    t["has_richsync"] = best.has_richsync
                     artist = t["artist"]  # nome canonico per AudioDB / Last.fm
                     title = t["title"]
-                    if best.has_lyrics:
-                        try:
-                            lyr = mx_client.get_lyrics(best.track_id)
-                            t["lyrics"] = lyr.body if lyr and not lyr.is_empty else ""
-                        except MusixmatchError:
-                            t["lyrics"] = ""
-                    else:
-                        t["lyrics"] = ""
+                    if not t.get("lyrics") and not t.get("richsync"):
+                        lyrics_text, richsync_body = fetch_musixmatch_text(
+                            mx_client,
+                            best.track_id,
+                            best.has_lyrics,
+                            best.has_richsync,
+                        )
+                        t["lyrics"] = lyrics_text
+                        t["richsync"] = richsync_body
                 else:
                     t.setdefault("lyrics", "")
+                    t.setdefault("richsync", [])
             except MusixmatchError:
                 t.setdefault("lyrics", "")
+                t.setdefault("richsync", [])
 
         # 1b) Bio + immagine da AudioDB (usa il nome artista già corretto da Musixmatch)
         bio = ""
@@ -829,6 +978,7 @@ def build_studio(
         t.setdefault("image", image_cache.get(t.get("artist", ""), ""))
         t.setdefault("audio_b64", "")
         t.setdefault("lyrics", "")
+        t.setdefault("richsync", [])
 
     # 4) ElevenLabs TTS — pre-generate speech audio for each track (best effort).
     # Uses getattr so the block is skipped safely if the module cache is stale.
@@ -977,6 +1127,7 @@ STUDIO_HTML = """
     transition: color .35s ease, background .35s ease;
   }
   .lyr-line.active { color: #f3f1ff; font-weight: 600; background: rgba(249,115,22,.12); }
+  .lyr-word.active { color: #facc15; text-shadow: 0 0 10px rgba(250,204,21,.35); }
 </style>
 </head>
 <body>
@@ -1143,11 +1294,42 @@ STUDIO_HTML = """
   }
 
   // ---- Lyrics ----
+  function richsyncLineText(item) {
+    const line = item && (item.l || item.line || item.text || '');
+    if (Array.isArray(line)) {
+      return line.map(token => {
+        if (token && typeof token === 'object') return token.c || token.text || '';
+        return String(token || '');
+      }).join('').trim();
+    }
+    return String(line || '').trim();
+  }
+
   function showLyrics(i) {
     const t = TRACKS[i];
     const section = document.getElementById('lyrics-section');
     const box = document.getElementById('lyrics-box');
     section.style.display = 'flex';
+    const richsync = Array.isArray(t.richsync) ? t.richsync : [];
+    if (richsync.length) {
+      box.innerHTML = richsync.map((item, idx) => {
+        const text = richsyncLineText(item);
+        if (!text) return '';
+        const start = Number(item.ts || item.start || 0);
+        const end = Number(item.te || item.end || 0);
+        const line = item.l || item.line || item.text || '';
+        let htmlText = esc(text);
+        if (Array.isArray(line)) {
+          htmlText = line.map((token, wordIdx) => {
+            const raw = token && typeof token === 'object' ? (token.c || token.text || '') : String(token || '');
+            const offset = token && typeof token === 'object' ? Number(token.o || token.offset || 0) : 0;
+            return '<span class="lyr-word" data-offset="' + offset + '" data-word="' + wordIdx + '">' + esc(raw) + '</span>';
+          }).join('');
+        }
+        return '<div class="lyr-line" data-idx="' + idx + '" data-start="' + start + '" data-end="' + end + '">' + htmlText + '</div>';
+      }).join('');
+      return;
+    }
     if (!t.lyrics || !t.lyrics.trim()) {
       box.innerHTML = '<div class="lyr-empty">Synced lyrics unavailable for this track.</div>';
       return;
@@ -1164,11 +1346,28 @@ STUDIO_HTML = """
     const box = document.getElementById('lyrics-box');
     const lines = box.querySelectorAll('.lyr-line');
     if (!lines.length || !duration) return;
-    const idx = Math.min(Math.floor((position / duration) * lines.length), lines.length - 1);
+    const pos = position > 1000 ? position / 1000 : position;
+    const dur = duration > 1000 ? duration / 1000 : duration;
+    let idx = -1;
+    lines.forEach((el, i) => {
+      const start = Number(el.dataset.start);
+      const end = Number(el.dataset.end);
+      if (!Number.isNaN(start) && pos >= start && (!end || pos <= end)) idx = i;
+    });
+    if (idx < 0) idx = Math.min(Math.floor((pos / dur) * lines.length), lines.length - 1);
     let changed = false;
     lines.forEach((el, i) => {
       const was = el.classList.contains('active');
       el.classList.toggle('active', i === idx);
+      if (i === idx) {
+        const start = Number(el.dataset.start) || 0;
+        el.querySelectorAll('.lyr-word').forEach(word => {
+          const offset = Number(word.dataset.offset || 0);
+          word.classList.toggle('active', pos >= start + offset);
+        });
+      } else {
+        el.querySelectorAll('.lyr-word').forEach(word => word.classList.remove('active'));
+      }
       if (!was && i === idx) changed = true;
     });
     if (changed && lines[idx]) lines[idx].scrollIntoView({ block: 'center', behavior: 'smooth' });
@@ -1378,6 +1577,9 @@ def render_studio_component(studio: dict, tts_lang: str) -> None:
             "uri": t.get("uri", ""),
             "audio_b64": t.get("audio_b64", ""),
             "lyrics": t.get("lyrics", ""),
+            "richsync": t.get("richsync", []),
+            "track_id": t.get("track_id", ""),
+            "album": t.get("album", ""),
         }
         for t in tracks
     ]
@@ -1490,7 +1692,7 @@ def render_message(index: int, msg: dict) -> None:
         tracks = msg.get("tracks") or []
         if tracks:
             st.markdown('<hr class="hr-glow">', unsafe_allow_html=True)
-            st.markdown("##### 🎧 Suggested tracks")
+            st.markdown("##### 🎧 Musixmatch tracks")
             render_track_cards(tracks)
             if settings.spotify_ready:
                 if st.button(
@@ -1530,34 +1732,75 @@ def handle_user_input(prompt: str, lang_name: str, lang_code: str) -> None:
 
     teller = Storyteller()
 
-    with st.spinner("Thinking..."):
+    with st.spinner("Searching Musixmatch..."):
         try:
             history = [
                 {"role": m["role"], "content": m["content"]}
                 for m in st.session_state["messages"]
             ]
-            content, reasoning = teller.converse(
+            plan = teller.plan_musixmatch_search(
                 messages=history,
                 language=lang_name,
                 context=st.session_state.get("context", ""),
             )
-            text, tracks = Storyteller.extract_playlist(content)
         except StorytellerError as exc:
             st.session_state["messages"].append(
-                {"role": "assistant", "content": f"⚠️ LLM: {exc}"}
+                {"role": "assistant", "content": user_facing_llm_error(exc)}
             )
             st.session_state["studio"] = empty_studio(prompt)
             return
 
-    # Rileva rifiuto off-topic: il modello emette [NON_MUSICALE] se l'argomento
-    # non riguarda la musica (istruzione nel CHAT_SYSTEM_PROMPT).
-    if "[NON_MUSICALE]" in text:
-        clean = text.replace("[NON_MUSICALE]", "").strip()
-        if not clean:
-            key = lang_name if lang_name in REFUSALS else "Italiano"
-            clean = REFUSALS[key]
-        st.session_state["messages"].append({"role": "assistant", "content": clean})
+    if not plan.get("music_related", True):
+        key = lang_name if lang_name in REFUSALS else "Italiano"
+        st.session_state["messages"].append({"role": "assistant", "content": REFUSALS[key]})
         return
+
+    if not plan.get("needs_search", True):
+        with st.spinner("Thinking..."):
+            try:
+                content, reasoning = teller.converse(
+                    messages=[
+                        {"role": m["role"], "content": m["content"]}
+                        for m in st.session_state["messages"]
+                    ],
+                    language=lang_name,
+                    context=st.session_state.get("context", ""),
+                )
+                text, _ = Storyteller.extract_playlist(content)
+            except StorytellerError as exc:
+                st.session_state["messages"].append(
+                    {"role": "assistant", "content": user_facing_llm_error(exc)}
+                )
+                st.session_state["studio"] = empty_studio(prompt)
+                return
+        if "[NON_MUSICALE]" in text:
+            key = lang_name if lang_name in REFUSALS else "Italiano"
+            text = text.replace("[NON_MUSICALE]", "").strip() or REFUSALS[key]
+        st.session_state["messages"].append(
+            {"role": "assistant", "content": text, "reasoning": reasoning, "tracks": []}
+        )
+        st.session_state["studio"] = empty_studio(prompt)
+        return
+
+    tracks, notes = search_musixmatch_from_plan(plan)
+
+    with st.spinner("Rewriting from Musixmatch lyrics..."):
+        try:
+            text, reasoning = teller.compose_musixmatch_response(
+                prompt=prompt,
+                tracks=tracks,
+                language=lang_name,
+                context=st.session_state.get("context", ""),
+            )
+        except StorytellerError as exc:
+            st.session_state["messages"].append(
+                {"role": "assistant", "content": user_facing_llm_error(exc), "tracks": tracks}
+            )
+            st.session_state["studio"] = build_studio(prompt, tracks, lang_name, lang_code) if tracks else empty_studio(prompt)
+            return
+
+    if notes:
+        text = text + "\n\n" + "\n".join(f"> {note}" for note in notes)
 
     st.session_state["messages"].append(
         {"role": "assistant", "content": text, "reasoning": reasoning, "tracks": tracks}

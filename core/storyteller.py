@@ -93,16 +93,13 @@ come un interlocutore colto e mai banale.
 
 La tua specialita' e' leggere l'ombra, la redenzione e il conflitto umano nascosti \
 nella musica e nei testi: decodifichi metafore, slang, simboli e sottotesto \
-psicologico. Ma puoi parlare liberamente di qualsiasi cosa l'utente desideri.
+psicologico.
 
 Tool musicali (usali SOLO quando sono pertinenti alla conversazione):
 - Se l'utente porta un brano/un testo, puoi analizzarne il significato poetico e psicologico.
-- Se ha senso proporre una playlist o dei brani affini, elencali e AGGIUNGI in fondo \
-un blocco di codice etichettato `playlist` con un array JSON valido nel formato:
-```playlist
-[{{"title": "...", "artist": "...", "reason": "<max 12 parole>"}}]
-```
-Non inserire il blocco `playlist` se non stai effettivamente consigliando brani.
+- Non proporre titoli, artisti o playlist dalla tua memoria interna: ricerca brani e testi \
+arrivano solo da Musixmatch in un passaggio separato.
+- Non generare mai blocchi `playlist`.
 
 Regole:
 - {language_rule}
@@ -115,6 +112,57 @@ con letteratura, psicologia e cultura. Se l'utente ti chiede qualcosa di \
 completamente estraneo alla musica, scrivi PRIMA la riga esatta [NON_MUSICALE] e poi \
 il tuo rifiuto in-character breve e senza playlist. Non rispondere mai a domande di \
 cucina, sport, politica, tecnologia o qualsiasi altro argomento non musicale."""
+
+
+MUSIXMATCH_SEARCH_TEMPLATE = """Leggi la conversazione e prepara SOLO le query per Musixmatch.
+
+Regola lingua: {language_rule}
+
+Contesto opzionale:
+{context}
+
+Conversazione recente:
+{messages}
+
+Devi decidere se l'ultimo messaggio e' musicale e se richiede una ricerca di brani/testi.
+Non proporre canzoni, artisti o playlist dalla tua memoria.
+Se l'utente cita esplicitamente titolo e artista, estraili in q_track e q_artist.
+Se l'utente chiede brani per tema, mood, genere, epoca o parole del testo, crea query testuali brevi in q e/o q_lyrics.
+
+Rispondi SOLO con JSON valido:
+{{
+  "music_related": true,
+  "needs_search": true,
+  "limit": 8,
+  "queries": [
+    {{
+      "q": "",
+      "q_track": "",
+      "q_artist": "",
+      "q_lyrics": "",
+      "reason": "<max 12 parole>"
+    }}
+  ]
+}}
+Usa limit tra 1 e 8. Se non serve cercare brani/testi, usa needs_search=false e queries=[]."""
+
+
+MUSIXMATCH_RESPONSE_TEMPLATE = """Richiesta utente:
+\"\"\"
+{prompt}
+\"\"\"
+
+Contesto opzionale:
+{context}
+
+Risultati reali trovati su Musixmatch:
+{tracks}
+
+Scrivi una risposta in {language}, in Markdown pulito.
+Usa solo i brani presenti nei risultati Musixmatch.
+Non aggiungere altri titoli o artisti.
+Se sono presenti testi o richsync, riscrivi/parafrasa il significato invece di copiare lunghi passaggi.
+Se non ci sono risultati, dillo chiaramente e suggerisci una query piu' precisa."""
 
 
 STUDIO_BRIEF_TEMPLATE = """Stai preparando un'esperienza audio-narrata ("radio d'autore") \
@@ -236,18 +284,7 @@ class Storyteller:
         language: str = "Italiano",
     ) -> list[dict[str, str]]:
         """Propone una lista di brani affini (per la curatela della playlist)."""
-        user_prompt = PLAYLIST_TEMPLATE.format(
-            analysis=analysis.strip(),
-            n=n,
-            title=title,
-            artist=artist,
-            language=language,
-        )
-        content, _ = self._chat(
-            system="Sei un curatore musicale. Rispondi esclusivamente con JSON valido.",
-            user=user_prompt,
-        )
-        return self._parse_tracks(content)
+        return []
 
     def studio_brief(
         self,
@@ -288,6 +325,119 @@ class Storyteller:
             user=user,
         )
         return self._parse_json(content)
+
+    def plan_musixmatch_search(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        language: str = "Italiano",
+        context: str = "",
+    ) -> dict[str, Any]:
+        if language == "Auto":
+            language_rule = (
+                "Riconosci automaticamente la lingua dell'ultimo messaggio dell'utente."
+            )
+        else:
+            language_rule = f"Interpreta la richiesta e rispondi in {language} quando richiesto."
+        recent = messages[-8:]
+        last_user = ""
+        for message in reversed(messages):
+            if message.get("role") == "user":
+                last_user = message.get("content", "")
+                break
+        user = MUSIXMATCH_SEARCH_TEMPLATE.format(
+            language_rule=language_rule,
+            context=context.strip() or "(nessuno)",
+            messages=json.dumps(recent, ensure_ascii=False, indent=2),
+        )
+        content, _ = self._chat(
+            system="Sei un router di ricerca musicale. Rispondi esclusivamente con JSON valido.",
+            user=user,
+        )
+        data = self._parse_json(content)
+        if not data:
+            return {
+                "music_related": True,
+                "needs_search": True,
+                "limit": 8,
+                "queries": [{"q": last_user, "q_track": "", "q_artist": "", "q_lyrics": "", "reason": ""}],
+            }
+        def as_bool(value: Any, default: bool) -> bool:
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                normalized = value.strip().lower()
+                if normalized in {"true", "yes", "si", "sì", "1"}:
+                    return True
+                if normalized in {"false", "no", "0"}:
+                    return False
+            return default
+        try:
+            limit = int(data.get("limit", 8))
+        except (TypeError, ValueError):
+            limit = 8
+        limit = max(1, min(limit, 8))
+        queries: list[dict[str, str]] = []
+        raw_queries = data.get("queries") or []
+        if isinstance(raw_queries, list):
+            for item in raw_queries:
+                if not isinstance(item, dict):
+                    continue
+                query = {
+                    "q": str(item.get("q", "")).strip(),
+                    "q_track": str(item.get("q_track", "")).strip(),
+                    "q_artist": str(item.get("q_artist", "")).strip(),
+                    "q_lyrics": str(item.get("q_lyrics", "")).strip(),
+                    "reason": str(item.get("reason", "")).strip(),
+                }
+                if any(query[k] for k in ("q", "q_track", "q_artist", "q_lyrics")):
+                    queries.append(query)
+        if as_bool(data.get("needs_search"), True) and not queries and last_user:
+            queries.append({"q": last_user, "q_track": "", "q_artist": "", "q_lyrics": "", "reason": ""})
+        return {
+            "music_related": as_bool(data.get("music_related"), True),
+            "needs_search": as_bool(data.get("needs_search"), True),
+            "limit": limit,
+            "queries": queries[:4],
+        }
+
+    def compose_musixmatch_response(
+        self,
+        *,
+        prompt: str,
+        tracks: list[dict[str, Any]],
+        language: str = "Italiano",
+        context: str = "",
+    ) -> tuple[str, str]:
+        track_parts: list[str] = []
+        for i, t in enumerate(tracks):
+            line = f'{i + 1}. "{t.get("title", "")}" — {t.get("artist", "")}'
+            if t.get("album"):
+                line += f'\n   Album: {t.get("album", "")}'
+            if t.get("reason"):
+                line += f'\n   Motivo ricerca: {t.get("reason", "")}'
+            richsync = t.get("richsync") or []
+            if isinstance(richsync, list) and richsync:
+                line += "\n   Richsync Musixmatch: disponibile"
+            lyrics = (t.get("lyrics") or "").strip()
+            if lyrics:
+                lyrics_short = lyrics[:700] + ("…" if len(lyrics) > 700 else "")
+                line += f'\n   Testo Musixmatch: {lyrics_short}'
+            track_parts.append(line)
+        user = MUSIXMATCH_RESPONSE_TEMPLATE.format(
+            prompt=prompt,
+            context=context.strip() or "(nessuno)",
+            tracks="\n\n".join(track_parts) if track_parts else "(nessun risultato)",
+            language=language,
+        )
+        return self._chat(
+            system=(
+                "Sei un critico musicale. Usa solo i risultati Musixmatch forniti. "
+                "Non aggiungere altri brani, artisti o dati non presenti. "
+                "Parafrasa i testi senza copiarli integralmente."
+            ),
+            user=user,
+        )
 
     def curate(
         self,

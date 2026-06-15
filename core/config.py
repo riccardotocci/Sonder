@@ -26,7 +26,9 @@ class Settings:
     """Snapshot immutabile della configurazione dell'applicazione."""
 
     # --- Musixmatch ---
-    musixmatch_api_key: str = field(default_factory=lambda: _env("MUSIXMATCH_API_KEY"))
+    musixmatch_api_key: str = field(
+        default_factory=lambda: _env("MUSIXMATCH_API_KEY") or _env("MXM_KEY")
+    )
 
     # --- TheAudioDB ("2" = chiave di test pubblica gratuita) ---
     audiodb_api_key: str = field(default_factory=lambda: _env("AUDIODB_API_KEY", "2"))
