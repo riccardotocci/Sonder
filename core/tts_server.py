@@ -68,6 +68,8 @@ def _set_cors_headers(handler: BaseHTTPRequestHandler) -> None:
     handler.send_header("Vary", "Origin")
     handler.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
     handler.send_header("Access-Control-Allow-Headers", "Content-Type, X-Sonder-TTS-Token")
+    handler.send_header("Access-Control-Allow-Private-Network", "true")
+    handler.send_header("Access-Control-Max-Age", "86400")
 
 
 class _TTSRequestHandler(BaseHTTPRequestHandler):

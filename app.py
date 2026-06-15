@@ -638,16 +638,15 @@ def fetch_audiodb_track_text(
         )
         return first_present(data, fields)
 
-    get_ordered_context = getattr(client, "get_ordered_context", None)
-    if callable(get_ordered_context):
-        sections = get_ordered_context(
-            artist=artist,
-            title=title,
-            album=album,
-            language=lang_code,
-        )
-        if isinstance(sections, dict) and sections.get("combined"):
-            return clean(str(sections["combined"]), 900)
+    sections = fetch_audiodb_ordered_context(
+        client,
+        artist=artist,
+        title=title,
+        album=album,
+        lang_code=lang_code,
+    )
+    if sections.get("combined"):
+        return clean(sections["combined"], 900)
 
     get_track_text = getattr(client, "get_track_text", None)
     if callable(get_track_text):
@@ -707,12 +706,83 @@ def fetch_audiodb_track_text(
         if description:
             return clean(description)
 
-    return client.get_music_fact(
+    return fetch_audiodb_music_fact(
+        client,
         artist=artist,
         title=title,
         album=album,
-        language=lang_code,
+        lang_code=lang_code,
     )
+
+
+def fetch_audiodb_ordered_context(
+    client: AudioDBClient,
+    *,
+    artist: str,
+    title: str = "",
+    album: str = "",
+    lang_code: str = "EN",
+) -> dict[str, str]:
+    """Recupera sezioni AudioDB se supportate dal client installato."""
+    empty = {
+        "song_news": "",
+        "album_news": "",
+        "artist_description": "",
+        "combined": "",
+    }
+    get_ordered_context = getattr(client, "get_ordered_context", None)
+    if not callable(get_ordered_context):
+        return empty
+
+    try:
+        sections = get_ordered_context(
+            artist=artist,
+            title=title,
+            album=album,
+            language=lang_code,
+        )
+    except TypeError:
+        sections = get_ordered_context(
+            artist=artist,
+            title=title,
+            language=lang_code,
+        )
+    if not isinstance(sections, dict):
+        return empty
+
+    return {
+        key: str(sections.get(key) or "").strip()
+        for key in empty
+    }
+
+
+def fetch_audiodb_music_fact(
+    client: AudioDBClient,
+    *,
+    artist: str,
+    title: str = "",
+    album: str = "",
+    lang_code: str = "EN",
+) -> str:
+    """Recupera una curiosita' AudioDB se supportata dal client installato."""
+    get_music_fact = getattr(client, "get_music_fact", None)
+    if not callable(get_music_fact):
+        return ""
+
+    try:
+        fact = get_music_fact(
+            artist=artist,
+            title=title,
+            album=album,
+            language=lang_code,
+        )
+    except TypeError:
+        fact = get_music_fact(
+            artist=artist,
+            title=title,
+            language=lang_code,
+        )
+    return str(fact or "").strip()
 
 
 def fetch_song_context(title: str, artist: str, lang_code: str) -> tuple[str, list[str]]:
@@ -1127,11 +1197,12 @@ def enrich_tracks_with_audiodb_facts(
         if not artist:
             continue
         try:
-            ordered_context = client.get_ordered_context(
+            ordered_context = fetch_audiodb_ordered_context(
+                client,
                 artist=artist,
                 title=title,
                 album=album,
-                language=lang_code,
+                lang_code=lang_code,
             )
             if ordered_context.get("song_news"):
                 t["audio_db_song_news"] = ordered_context["song_news"]
@@ -1151,11 +1222,12 @@ def enrich_tracks_with_audiodb_facts(
                 )
                 if text:
                     t["audio_db_text"] = text
-            fact = client.get_music_fact(
+            fact = fetch_audiodb_music_fact(
+                client,
                 artist=artist,
                 title=title,
                 album=album,
-                language=lang_code,
+                lang_code=lang_code,
             )
             if fact:
                 t["audio_db_fact"] = fact
@@ -1231,11 +1303,12 @@ def build_studio(
                     bio = a.biography(lang_code) or ""
                     image_cache[artist] = a.image_url
                     t["image"] = a.image_url
-                ordered_context = adb_client.get_ordered_context(
+                ordered_context = fetch_audiodb_ordered_context(
+                    adb_client,
                     artist=artist,
                     title=title,
                     album=str(t.get("album", "")),
-                    language=lang_code,
+                    lang_code=lang_code,
                 )
                 if ordered_context.get("song_news"):
                     t["audio_db_song_news"] = ordered_context["song_news"]
@@ -1256,11 +1329,12 @@ def build_studio(
                     if text:
                         t["audio_db_text"] = text
                 if not t.get("audio_db_fact"):
-                    fact = adb_client.get_music_fact(
+                    fact = fetch_audiodb_music_fact(
+                        adb_client,
                         artist=artist,
                         title=title,
                         album=str(t.get("album", "")),
-                        language=lang_code,
+                        lang_code=lang_code,
                     )
                     if fact:
                         t["audio_db_fact"] = fact
@@ -1885,7 +1959,8 @@ STUDIO_HTML = """
             return t.audio_url;
         }
         const text = (t.speech || [t.musixmatch_speech, t.audiodb_speech].filter(Boolean).join(' ') || '').trim();
-        if (!text || !TTS_ENDPOINT || !TTS_TOKEN) return '';
+        if (!text) throw new Error('missing_text');
+        if (!TTS_ENDPOINT || !TTS_TOKEN) throw new Error('elevenlabs_not_configured');
 
         const response = await fetch(TTS_ENDPOINT, {
             method: 'POST',
@@ -1895,11 +1970,27 @@ STUDIO_HTML = """
             },
             body: JSON.stringify({ text })
         });
-        if (!response.ok) throw new Error('tts_' + response.status);
+        if (!response.ok) {
+            let detail = 'tts_' + response.status;
+            try {
+                const data = await response.json();
+                if (data && data.error) detail = String(data.error);
+            } catch (e) {}
+            throw new Error(detail);
+        }
         const blob = await response.blob();
         const url = URL.createObjectURL(blob);
         audioObjectUrls.set(i, url);
         return url;
+    }
+
+    function ttsStatusMessage(error) {
+        const message = String(error && error.message || error || '');
+        if (message.includes('elevenlabs_not_configured')) return 'ElevenLabs key missing';
+        if (message.includes('missing_text')) return 'Narration text missing';
+        if (message.includes('forbidden')) return 'TTS token rejected';
+        if (message.includes('NetworkError') || message.includes('Failed to fetch')) return 'TTS server unreachable';
+        return 'ElevenLabs audio unavailable';
     }
 
     async function speak(i, onend) {
@@ -1909,11 +2000,6 @@ STUDIO_HTML = """
         try {
             const audioUrl = await narrationAudioUrl(i);
             if (current !== i) return;
-            if (!audioUrl) {
-                setStatus('ElevenLabs audio unavailable');
-                onend && onend();
-                return;
-            }
             setStatus('🗣️ Narrating…');
             const audio = new Audio(audioUrl);
       currentAudio = audio;
@@ -1923,7 +2009,7 @@ STUDIO_HTML = """
       return;
         } catch (e) {
             currentAudio = null;
-            setStatus('ElevenLabs audio unavailable');
+            setStatus(ttsStatusMessage(e));
             onend && onend();
     }
   }
