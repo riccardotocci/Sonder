@@ -15,15 +15,16 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+DEFAULT_LLM_MODEL = "openai/gpt-oss-120b:free"
+
 LLM_MODEL_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("GPT OSS 120B", DEFAULT_LLM_MODEL),
     ("Gemma", "google/gemma-4-31b-it:free"),
     ("Nemotron 3 Ultra", "nvidia/nemotron-3-ultra-550b-a55b:free"),
     ("Nemotron 3 Super", "nvidia/nemotron-3-super-120b-a12b:free"),
     ("Owl Alpha", "openrouter/owl-alpha"),
     ("Nex N2 Pro", "nex-agi/nex-n2-pro:free"),
-    ("GPT OSS 120B", "openai/gpt-oss-120b:free"),
 )
-DEFAULT_LLM_MODEL = LLM_MODEL_OPTIONS[5][1]
 
 
 def _env(key: str, default: str = "") -> str:
