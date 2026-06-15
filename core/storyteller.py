@@ -162,6 +162,7 @@ Scrivi una risposta in {language}, in Markdown pulito.
 Usa solo i brani presenti nei risultati Musixmatch.
 Non aggiungere altri titoli o artisti.
 Se sono presenti testi o richsync, riscrivi/parafrasa il significato invece di copiare lunghi passaggi.
+Se e' presente una curiosita' TheAudioDB, inseriscila in modo naturale nella risposta.
 Se non ci sono risultati, dillo chiaramente e suggerisci una query piu' precisa."""
 
 
@@ -170,6 +171,7 @@ per questa playlist, nata dalla richiesta dell'utente: "{title}".
 
 Per ogni brano sono forniti (quando disponibili) la biografia dell'artista e un estratto del testo.
 Usali per rendere ogni narrazione specifica, profonda e ancorata a dettagli reali.
+Se e' presente una curiosita' TheAudioDB, integrala con naturalezza nel discorso senza trasformarla in elenco.
 
 Brani (nell'ordine):
 {tracks}
@@ -312,6 +314,9 @@ class Storyteller:
             if lyrics:
                 lyrics_short = lyrics[:500] + ("…" if len(lyrics) > 500 else "")
                 line += f'\n   Testo (estratto): {lyrics_short}'
+            fact = (t.get("audio_db_fact") or t.get("audiodb_fact") or "").strip()
+            if fact:
+                line += f'\n   Curiosita TheAudioDB: {fact}'
             track_parts.append(line)
         track_lines = "\n\n".join(track_parts)
         user = STUDIO_BRIEF_TEMPLATE.format(
@@ -423,6 +428,9 @@ class Storyteller:
             if lyrics:
                 lyrics_short = lyrics[:700] + ("…" if len(lyrics) > 700 else "")
                 line += f'\n   Testo Musixmatch: {lyrics_short}'
+            fact = (t.get("audio_db_fact") or t.get("audiodb_fact") or "").strip()
+            if fact:
+                line += f'\n   Curiosita TheAudioDB: {fact}'
             track_parts.append(line)
         user = MUSIXMATCH_RESPONSE_TEMPLATE.format(
             prompt=prompt,

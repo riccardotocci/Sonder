@@ -28,6 +28,17 @@ BIOGRAPHY_FIELDS: dict[str, str] = {
     "RU": "strBiographyRU",
     "JP": "strBiographyJP",
 }
+DESCRIPTION_FIELDS: dict[str, str] = {
+    "IT": "strDescriptionIT",
+    "EN": "strDescriptionEN",
+    "FR": "strDescriptionFR",
+    "DE": "strDescriptionDE",
+    "ES": "strDescriptionES",
+    "PT": "strDescriptionPT",
+    "NL": "strDescriptionNL",
+    "RU": "strDescriptionRU",
+    "JP": "strDescriptionJP",
+}
 
 
 class AudioDBError(RuntimeError):
@@ -133,3 +144,112 @@ class AudioDBClient:
         if not artist:
             return ""
         return artist.image_url
+
+    def search_track(self, artist: str, title: str) -> Optional[dict[str, Any]]:
+        """Cerca metadati TheAudioDB per una traccia."""
+        if not artist.strip() or not title.strip():
+            return None
+        data = self._request("searchtrack.php", s=artist.strip(), t=title.strip())
+        tracks = data.get("track")
+        if not tracks:
+            return None
+        first = tracks[0]
+        return first if isinstance(first, dict) else None
+
+    def search_album(self, artist: str, album: str) -> Optional[dict[str, Any]]:
+        """Cerca metadati TheAudioDB per un album."""
+        if not artist.strip() or not album.strip():
+            return None
+        data = self._request("searchalbum.php", s=artist.strip(), a=album.strip())
+        albums = data.get("album")
+        if not albums:
+            return None
+        first = albums[0]
+        return first if isinstance(first, dict) else None
+
+    @staticmethod
+    def _localized_description(data: dict[str, Any], language: str = "EN") -> str:
+        lang = language.upper()
+        field = DESCRIPTION_FIELDS.get(lang, "strDescriptionEN")
+        text = (data.get(field) or "").strip()
+        if text:
+            return text
+        text = (data.get("strDescriptionEN") or "").strip()
+        if text:
+            return text
+        for api_field in DESCRIPTION_FIELDS.values():
+            text = (data.get(api_field) or "").strip()
+            if text:
+                return text
+        return ""
+
+    @staticmethod
+    def _shorten(text: str, limit: int = 360) -> str:
+        text = " ".join((text or "").split())
+        if len(text) <= limit:
+            return text
+        cut = text[:limit].rsplit(" ", 1)[0].rstrip(".,;:")
+        return cut + "..."
+
+    def get_music_fact(
+        self,
+        *,
+        artist: str,
+        title: str = "",
+        album: str = "",
+        language: str = "EN",
+    ) -> str:
+        """Restituisce una curiosita' fondata su dati TheAudioDB.
+
+        Priorita': descrizione brano -> dettagli album -> dati artista. La stringa
+        e' gia' corta e pronta da passare al prompt LLM come contesto fattuale.
+        """
+        if not artist.strip():
+            return ""
+
+        track = self.search_track(artist, title) if title.strip() else None
+        if track:
+            description = self._localized_description(track, language)
+            if description:
+                return self._shorten(description)
+            pieces = []
+            if track.get("strAlbum"):
+                pieces.append(f"album: {track['strAlbum']}")
+            if track.get("strGenre"):
+                pieces.append(f"genre: {track['strGenre']}")
+            if track.get("strMood"):
+                pieces.append(f"mood: {track['strMood']}")
+            if pieces:
+                return self._shorten(f"TheAudioDB associa il brano a " + ", ".join(pieces) + ".")
+
+        album_data = self.search_album(artist, album) if album.strip() else None
+        if album_data:
+            description = self._localized_description(album_data, language)
+            if description:
+                return self._shorten(description)
+            pieces = []
+            if album_data.get("intYearReleased"):
+                pieces.append(f"pubblicato nel {album_data['intYearReleased']}")
+            if album_data.get("strGenre"):
+                pieces.append(f"genere {album_data['strGenre']}")
+            if album_data.get("strLabel"):
+                pieces.append(f"etichetta {album_data['strLabel']}")
+            if pieces:
+                album_name = album_data.get("strAlbum") or album
+                return self._shorten(f"TheAudioDB registra l'album {album_name} come " + ", ".join(pieces) + ".")
+
+        artist_data = self.get_artist(artist)
+        if artist_data:
+            pieces = []
+            if artist_data.formed_year:
+                pieces.append(f"attivo/formato dal {artist_data.formed_year}")
+            if artist_data.country:
+                pieces.append(f"origine {artist_data.country}")
+            if artist_data.genre:
+                pieces.append(f"genere {artist_data.genre}")
+            if artist_data.style:
+                pieces.append(f"stile {artist_data.style}")
+            if pieces:
+                return self._shorten(f"TheAudioDB descrive {artist_data.name or artist} come " + ", ".join(pieces) + ".")
+
+        return ""

@@ -632,6 +632,7 @@ def musixmatch_track_payload(
         "richsync": richsync_body,
         "has_lyrics": track.has_lyrics,
         "has_richsync": track.has_richsync,
+        "audio_db_fact": "",
     }
 
 
@@ -862,6 +863,38 @@ def empty_studio(prompt: str) -> dict:
     return {"prompt": prompt, "tracks": [], "summary": "", "moods": []}
 
 
+def enrich_tracks_with_audiodb_facts(
+    tracks: list[dict[str, Any]],
+    lang_code: str,
+) -> list[str]:
+    """Aggiunge a ogni brano una curiosita' TheAudioDB best-effort."""
+    if not settings.audiodb_ready:
+        return ["TheAudioDB not configured: curiosities were not fetched."]
+    notes: list[str] = []
+    client = AudioDBClient()
+    for t in tracks:
+        if t.get("audio_db_fact"):
+            continue
+        artist = str(t.get("artist", "")).strip()
+        title = str(t.get("title", "")).strip()
+        album = str(t.get("album", "")).strip()
+        if not artist:
+            continue
+        try:
+            fact = client.get_music_fact(
+                artist=artist,
+                title=title,
+                album=album,
+                language=lang_code,
+            )
+            if fact:
+                t["audio_db_fact"] = fact
+        except AudioDBError as exc:
+            notes.append(f"TheAudioDB: {exc}")
+            break
+    return notes
+
+
 def build_studio(
     prompt: str,
     tracks: list[dict[str, str]],
@@ -928,6 +961,15 @@ def build_studio(
                     bio = a.biography(lang_code) or ""
                     image_cache[artist] = a.image_url
                     t["image"] = a.image_url
+                if not t.get("audio_db_fact"):
+                    fact = adb_client.get_music_fact(
+                        artist=artist,
+                        title=title,
+                        album=str(t.get("album", "")),
+                        language=lang_code,
+                    )
+                    if fact:
+                        t["audio_db_fact"] = fact
             except AudioDBError:
                 pass
 
@@ -938,6 +980,7 @@ def build_studio(
             except LastFMError:
                 pass
 
+        t.setdefault("audio_db_fact", "")
         t["_bio"] = bio  # campo temporaneo letto da studio_brief(), rimosso dopo
 
     # 2) Discorsi parlati + mood + origine geografica + riassunto (una sola chiamata LLM).
@@ -1294,6 +1337,12 @@ STUDIO_HTML = """
   }
 
   // ---- Lyrics ----
+    function numericTime(value) {
+        const n = Number(value);
+        if (!Number.isFinite(n)) return null;
+        return n > 1000 ? n / 1000 : n;
+    }
+
   function richsyncLineText(item) {
     const line = item && (item.l || item.line || item.text || '');
     if (Array.isArray(line)) {
@@ -1315,18 +1364,21 @@ STUDIO_HTML = """
       box.innerHTML = richsync.map((item, idx) => {
         const text = richsyncLineText(item);
         if (!text) return '';
-        const start = Number(item.ts || item.start || 0);
-        const end = Number(item.te || item.end || 0);
+                const startRaw = item.ts ?? item.start ?? item.time ?? 0;
+                const endRaw = item.te ?? item.end ?? item.endTime ?? '';
+                const start = numericTime(startRaw) ?? 0;
+                const end = numericTime(endRaw);
         const line = item.l || item.line || item.text || '';
         let htmlText = esc(text);
         if (Array.isArray(line)) {
           htmlText = line.map((token, wordIdx) => {
             const raw = token && typeof token === 'object' ? (token.c || token.text || '') : String(token || '');
-            const offset = token && typeof token === 'object' ? Number(token.o || token.offset || 0) : 0;
+                        const offset = token && typeof token === 'object' ? (numericTime(token.o ?? token.offset ?? 0) ?? 0) : 0;
             return '<span class="lyr-word" data-offset="' + offset + '" data-word="' + wordIdx + '">' + esc(raw) + '</span>';
           }).join('');
         }
-        return '<div class="lyr-line" data-idx="' + idx + '" data-start="' + start + '" data-end="' + end + '">' + htmlText + '</div>';
+                const endAttr = end === null ? '' : end;
+                return '<div class="lyr-line" data-idx="' + idx + '" data-start="' + start + '" data-end="' + endAttr + '">' + htmlText + '</div>';
       }).join('');
       return;
     }
@@ -1345,16 +1397,26 @@ STUDIO_HTML = """
   function syncLyrics(position, duration) {
     const box = document.getElementById('lyrics-box');
     const lines = box.querySelectorAll('.lyr-line');
-    if (!lines.length || !duration) return;
-    const pos = position > 1000 ? position / 1000 : position;
-    const dur = duration > 1000 ? duration / 1000 : duration;
+        if (!lines.length) return;
+        const pos = numericTime(position) ?? 0;
+        const dur = numericTime(duration) ?? 0;
+        const hasTimedLines = Array.from(lines).some(el => Number.isFinite(Number(el.dataset.start)));
     let idx = -1;
-    lines.forEach((el, i) => {
-      const start = Number(el.dataset.start);
-      const end = Number(el.dataset.end);
-      if (!Number.isNaN(start) && pos >= start && (!end || pos <= end)) idx = i;
-    });
-    if (idx < 0) idx = Math.min(Math.floor((pos / dur) * lines.length), lines.length - 1);
+        if (hasTimedLines) {
+            lines.forEach((el, i) => {
+                const start = Number(el.dataset.start);
+                if (!Number.isFinite(start) || pos < start) return;
+                const explicitEnd = Number(el.dataset.end);
+                const next = lines[i + 1];
+                const nextStart = next ? Number(next.dataset.start) : NaN;
+                const end = Number.isFinite(explicitEnd)
+                    ? explicitEnd
+                    : (Number.isFinite(nextStart) ? nextStart : Number.POSITIVE_INFINITY);
+                if (pos < end + 0.08) idx = i;
+            });
+        }
+        if (idx < 0 && dur > 0) idx = Math.min(Math.floor((pos / dur) * lines.length), lines.length - 1);
+        if (idx < 0) return;
     let changed = false;
     lines.forEach((el, i) => {
       const was = el.classList.contains('active');
@@ -1529,12 +1591,15 @@ STUDIO_HTML = """
         });
     };
 
-  function onState(state) {
+    let lastPlaybackUpdate = 0;
+
+    function onState(state) {
         if (!state || !state.data) return;
         const d = state.data;
         embedPosition = typeof d.position === 'number' ? d.position : embedPosition;
         embedDuration = typeof d.duration === 'number' ? d.duration : embedDuration;
         embedPaused = !!d.isPaused;
+        if (!embedPaused) lastPlaybackUpdate = performance.now();
         if (!embedPaused && embedPosition > 0) embedPlayed = true;
 
         if (current >= 0) syncLyrics(embedPosition, embedDuration);
@@ -1543,6 +1608,12 @@ STUDIO_HTML = """
             advance();
         }
   }
+
+    setInterval(() => {
+        if (current < 0 || embedPaused) return;
+        const elapsed = lastPlaybackUpdate ? (performance.now() - lastPlaybackUpdate) : 0;
+        syncLyrics(embedPosition + elapsed, embedDuration);
+    }, 180);
 
     // Stato iniziale dell'area player.
     document.getElementById('player').style.display = 'block';
@@ -1580,6 +1651,7 @@ def render_studio_component(studio: dict, tts_lang: str) -> None:
             "richsync": t.get("richsync", []),
             "track_id": t.get("track_id", ""),
             "album": t.get("album", ""),
+            "audio_db_fact": t.get("audio_db_fact", ""),
         }
         for t in tracks
     ]
@@ -1783,6 +1855,8 @@ def handle_user_input(prompt: str, lang_name: str, lang_code: str) -> None:
         return
 
     tracks, notes = search_musixmatch_from_plan(plan)
+    if tracks:
+        notes.extend(enrich_tracks_with_audiodb_facts(tracks, lang_code))
 
     with st.spinner("Rewriting from Musixmatch lyrics..."):
         try:
