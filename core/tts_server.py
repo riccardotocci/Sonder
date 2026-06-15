@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import secrets
 import threading
@@ -12,6 +13,9 @@ from typing import Any
 
 from .config import settings
 from .elevenlabs_client import ElevenLabsClient, ElevenLabsError
+
+
+logger = logging.getLogger("sonder.tts")
 
 
 class TTSServerError(RuntimeError):
@@ -79,19 +83,24 @@ class _TTSRequestHandler(BaseHTTPRequestHandler):
         return
 
     def do_OPTIONS(self) -> None:
+        logger.warning("TTS preflight from origin=%s private_network=%s", self.headers.get("Origin", ""), self.headers.get("Access-Control-Request-Private-Network", ""))
         self.send_response(204)
         _set_cors_headers(self)
         self.send_header("Content-Length", "0")
         self.end_headers()
 
     def do_POST(self) -> None:
+        logger.warning("TTS POST received path=%s origin=%s length=%s", self.path, self.headers.get("Origin", ""), self.headers.get("Content-Length", ""))
         if self.path.rstrip("/") != "/tts":
+            logger.warning("TTS rejected: path not found")
             _json_response(self, 404, {"error": "not_found"})
             return
         if self.headers.get("X-Sonder-TTS-Token") != _STATE.token:
+            logger.warning("TTS rejected: token mismatch")
             _json_response(self, 403, {"error": "forbidden"})
             return
         if not settings.elevenlabs_ready:
+            logger.warning("TTS rejected: ElevenLabs not configured")
             _json_response(self, 503, {"error": "elevenlabs_not_configured"})
             return
 
@@ -100,21 +109,25 @@ class _TTSRequestHandler(BaseHTTPRequestHandler):
         except ValueError:
             content_length = 0
         if content_length <= 0 or content_length > _MAX_BODY_BYTES:
+            logger.warning("TTS rejected: invalid body size %s", content_length)
             _json_response(self, 413, {"error": "invalid_body_size"})
             return
 
         try:
             data = json.loads(self.rfile.read(content_length).decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
+            logger.warning("TTS rejected: invalid JSON")
             _json_response(self, 400, {"error": "invalid_json"})
             return
 
         text = str(data.get("text", "")).strip()
         if not text:
+            logger.warning("TTS rejected: missing text")
             _json_response(self, 400, {"error": "missing_text"})
             return
         text = text[:_MAX_TEXT_CHARS]
         cache_key = _audio_cache_key(text)
+        logger.warning("TTS accepted: text_chars=%s cache_key=%s", len(text), cache_key[:12])
 
         with _STATE.lock:
             audio = _STATE.cache.get(cache_key)
@@ -122,12 +135,16 @@ class _TTSRequestHandler(BaseHTTPRequestHandler):
 
         if audio is None:
             try:
+                logger.warning("TTS cache miss: calling ElevenLabs")
                 audio = ElevenLabsClient().text_to_speech(text)
             except ElevenLabsError as exc:
+                logger.warning("TTS ElevenLabs error: %s", exc)
                 _json_response(self, 502, {"error": str(exc)})
                 return
             with _STATE.lock:
                 _STATE.cache[cache_key] = audio
+        else:
+            logger.warning("TTS cache hit: serving cached audio")
 
         self.send_response(200)
         _set_cors_headers(self)
@@ -146,6 +163,7 @@ def ensure_tts_server() -> TTSServerInfo:
 
     with _STATE.lock:
         if _STATE.server and _STATE.thread and _STATE.thread.is_alive():
+            logger.warning("TTS server already running endpoint=http://%s:%s/tts", _STATE.host, _STATE.port)
             return TTSServerInfo(
                 endpoint=f"http://{_STATE.host}:{_STATE.port}/tts",
                 token=_STATE.token,
@@ -173,5 +191,7 @@ def ensure_tts_server() -> TTSServerInfo:
         _STATE.port = port
         _STATE.server = server
         _STATE.thread = thread
+
+        logger.warning("TTS server started endpoint=http://%s:%s/tts", host, port)
 
         return TTSServerInfo(endpoint=f"http://{host}:{port}/tts", token=_STATE.token)

@@ -5,9 +5,14 @@ Falls back gracefully when the API key is not configured.
 """
 from __future__ import annotations
 
+import logging
+
 import requests
 
 from core.config import settings
+
+
+logger = logging.getLogger("sonder.elevenlabs")
 
 
 class ElevenLabsError(Exception):
@@ -56,6 +61,13 @@ class ElevenLabsClient:
         }
 
         try:
+            logger.warning(
+                "ElevenLabs POST voice=%s model=%s output=%s text_chars=%s",
+                vid,
+                mid,
+                out,
+                len(text),
+            )
             r = requests.post(
                 url,
                 headers=headers,
@@ -64,11 +76,14 @@ class ElevenLabsClient:
                 timeout=60,
             )
         except requests.RequestException as exc:
+            logger.warning("ElevenLabs network error: %s", exc)
             raise ElevenLabsError(f"Network error: {exc}") from exc
 
         if not r.ok:
+            logger.warning("ElevenLabs response error status=%s body=%s", r.status_code, r.text[:160])
             raise ElevenLabsError(
                 f"ElevenLabs API {r.status_code}: {r.text[:300]}"
             )
 
+        logger.warning("ElevenLabs response ok status=%s bytes=%s", r.status_code, len(r.content))
         return r.content
