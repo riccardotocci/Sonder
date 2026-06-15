@@ -1497,15 +1497,15 @@ STUDIO_HTML = """
 
     function normalizeSearchText(s) {
         return String(s || '')
-            .replace(/\s*[\(\[].*?[\)\]]/g, ' ')
-            .replace(/\s+[-–—]\s+(remaster(ed)?|live|radio edit|single version|album version|explicit|clean|mono|stereo).*$/i, ' ')
-            .replace(/\s+/g, ' ')
+            .replace(/\\s*[\\(\\[].*?[\\)\\]]/g, ' ')
+            .replace(/\\s+[-–—]\\s+(remaster(ed)?|live|radio edit|single version|album version|explicit|clean|mono|stereo).*$/i, ' ')
+            .replace(/\\s+/g, ' ')
             .trim();
     }
 
     function spotifyQueries(t) {
         const title = normalizeSearchText(t.title || '');
-        const artist = normalizeSearchText(t.artist || '').replace(/\s+(feat\.?|ft\.?|featuring)\s+.*$/i, '').trim();
+        const artist = normalizeSearchText(t.artist || '').replace(/\\s+(feat\\.?|ft\\.?|featuring)\\s+.*$/i, '').trim();
         const album = normalizeSearchText(t.album || '');
         const queries = [];
         if (title && artist && album) queries.push('track:' + title + ' artist:' + artist + ' album:' + album);
@@ -1517,7 +1517,7 @@ STUDIO_HTML = """
 
     function spotifyMatchScore(item, t) {
         const title = normalizeSearchText(t.title || '').toLowerCase();
-        const artist = normalizeSearchText(t.artist || '').toLowerCase().replace(/\s+(feat\.?|ft\.?|featuring)\s+.*$/i, '').trim();
+        const artist = normalizeSearchText(t.artist || '').toLowerCase().replace(/\\s+(feat\\.?|ft\\.?|featuring)\\s+.*$/i, '').trim();
         const album = normalizeSearchText(t.album || '').toLowerCase();
         const itemTitle = normalizeSearchText(item.name || '').toLowerCase();
         const itemAlbum = normalizeSearchText(item.album && item.album.name || '').toLowerCase();

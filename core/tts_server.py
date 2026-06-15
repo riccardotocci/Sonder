@@ -10,8 +10,8 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from core.config import settings
-from core.elevenlabs_client import ElevenLabsClient, ElevenLabsError
+from .config import settings
+from .elevenlabs_client import ElevenLabsClient, ElevenLabsError
 
 
 class TTSServerError(RuntimeError):
