@@ -112,6 +112,18 @@ streamlit run app.py
 | `ELEVENLABS_API_KEY` / `ELEVENLABS_VOICE_ID` | https://elevenlabs.io/ | per la voce narrante |
 | `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` | https://developer.spotify.com/dashboard | per le playlist |
 
+### Deploy su Streamlit Community Cloud
+
+In locale l'app legge `.env`. Su `sonder.streamlit.app` devi invece inserire le stesse variabili in **App settings -> Secrets**. Per ElevenLabs aggiungi almeno:
+
+```toml
+ELEVENLABS_API_KEY = "..."
+ELEVENLABS_VOICE_ID = "JBFqnCBsd6RMkjVDRZzb"
+SONDER_TTS_MODE = "embedded"
+```
+
+`SONDER_TTS_MODE = "embedded"` evita l'endpoint locale `127.0.0.1`: in deploy il browser dell'utente non puo' contattare il localhost del container Streamlit, quindi gli MP3 vengono generati lato server e incorporati nel componente.
+
 ---
 
 ## 🗺️ Roadmap hackathon

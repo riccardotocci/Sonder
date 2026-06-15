@@ -28,8 +28,17 @@ DEFAULT_LLM_MODEL = LLM_MODEL_OPTIONS[0][1]
 
 def _env(key: str, default: str = "") -> str:
     """Legge una variabile d'ambiente restituendo sempre una stringa pulita."""
-    value = os.getenv(key, default)
-    return (value or default).strip()
+    value = os.getenv(key)
+    if value is None or not str(value).strip():
+        try:
+            import streamlit as _st
+
+            value = _st.secrets.get(key, "")
+        except Exception:
+            value = ""
+    if value is None or not str(value).strip():
+        value = default
+    return str(value or default).strip()
 
 
 def _env_float(key: str, default: float) -> float:

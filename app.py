@@ -12,10 +12,12 @@ import base64
 import html
 import json
 import logging
+import os
 import re
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import pandas as pd
 import streamlit as st
@@ -24,6 +26,7 @@ import streamlit.components.v1 as components
 from core.config import LLM_MODEL_OPTIONS, settings
 from core.musixmatch_client import MusixmatchClient, MusixmatchError
 from core.audiodb_client import AudioDBClient, AudioDBError
+from core.elevenlabs_client import ElevenLabsClient, ElevenLabsError
 from core.lastfm_client import LastFMClient, LastFMError
 from core.storyteller import Storyteller, StorytellerError
 from core.spotify_client import SpotifyClient, SpotifyError
@@ -31,6 +34,7 @@ from core.tts_server import TTSServerError, ensure_tts_server
 from core import spotify_pkce
 
 logger = logging.getLogger("sonder.llm")
+TTS_MAX_TEXT_CHARS = 3500
 
 # --------------------------------------------------------------------------- #
 # Logo helpers
@@ -497,8 +501,88 @@ def render_status_sidebar() -> None:
     st.sidebar.markdown(
         f'<div class="api-box">{"".join(rows)}</div>', unsafe_allow_html=True
     )
-    st.sidebar.caption("Set keys in the `.env` file (see `.env.example`).")
+    st.sidebar.caption("Set keys in `.env` locally or in Streamlit Secrets when deployed.")
     st.sidebar.markdown("---")
+
+
+def is_local_url(url: str) -> bool:
+    parsed = urlparse(url or "")
+    host = (parsed.hostname or "").lower()
+    return host in {"", "localhost", "127.0.0.1", "0.0.0.0", "::1"}
+
+
+def current_app_url() -> str:
+    try:
+        context = getattr(st, "context", None)
+        return str(getattr(context, "url", "") or "")
+    except Exception:
+        return ""
+
+
+def config_value(key: str, default: str = "") -> str:
+    value = os.getenv(key)
+    if value is None or not str(value).strip():
+        try:
+            value = st.secrets.get(key, "")
+        except Exception:
+            value = ""
+    return str(value or default).strip()
+
+
+def use_embedded_tts_audio() -> bool:
+    mode = config_value("SONDER_TTS_MODE", "auto").lower()
+    if mode in {"embedded", "embed", "cloud"}:
+        return True
+    if mode in {"server", "local", "local-server", "localhost"}:
+        return False
+
+    app_url = current_app_url()
+    if app_url:
+        return not is_local_url(app_url)
+
+    redirect_uri = getattr(settings, "spotify_redirect_uri", "")
+    if redirect_uri.startswith("https://") and not is_local_url(redirect_uri):
+        return True
+
+    home = Path(os.getenv("HOME", ""))
+    return str(home).startswith("/home/adminuser") or Path.cwd().as_posix().startswith("/mount/src")
+
+
+def track_narration_text(track: dict[str, Any]) -> str:
+    primary = str(track.get("speech") or "").strip()
+    fallback = " ".join(
+        str(track.get(key) or "").strip()
+        for key in ("musixmatch_speech", "audiodb_speech")
+        if str(track.get(key) or "").strip()
+    ).strip()
+    return (primary or fallback)[:TTS_MAX_TEXT_CHARS]
+
+
+@st.cache_data(show_spinner=False, ttl=86400)
+def tts_audio_b64(text: str, voice_id: str) -> str:
+    audio = ElevenLabsClient().text_to_speech(text, voice_id=voice_id)
+    return base64.b64encode(audio).decode("ascii")
+
+
+def embed_tts_audio_for_tracks(tracks: list[dict[str, Any]]) -> None:
+    voice_id = settings.elevenlabs_voice_id or ElevenLabsClient.DEFAULT_VOICE
+    generated = 0
+    for track in tracks:
+        if track.get("audio_b64"):
+            continue
+        text = track_narration_text(track)
+        if not text:
+            track["audio_error"] = "missing_text"
+            continue
+        try:
+            track["audio_b64"] = tts_audio_b64(text, voice_id)
+            generated += 1
+        except ElevenLabsError as exc:
+            track["audio_error"] = str(exc)
+    add_llm_log(
+        "ElevenLabs TTS",
+        f"Embedded {generated} narration audio file(s) for browser playback.",
+    )
 
 
 def reset_llm_log() -> None:
@@ -1652,6 +1736,22 @@ STUDIO_HTML = """
   const cSpeech = document.getElementById('c-speech');
   const pMsg = document.getElementById('p-msg');
 
+    function ttsLog(message, data) {
+        if (data !== undefined) console.log('[Sonder TTS]', message, data);
+        else console.log('[Sonder TTS]', message);
+    }
+
+    function ttsError(message, error) {
+        console.error('[Sonder TTS]', message, error);
+    }
+
+    ttsLog('component initialized', {
+        tracks: TRACKS.length,
+        endpoint: TTS_ENDPOINT || '(empty)',
+        hasToken: Boolean(TTS_TOKEN),
+        hasSpotifyToken: Boolean(TOKEN)
+    });
+
   function setStatus(s) { statusEl.textContent = s; }
   function setPMsg(s) { pMsg.textContent = s; }
 
@@ -1752,6 +1852,7 @@ STUDIO_HTML = """
       '</div>' +
       '<a class="ti-open" href="' + trackSpotifyLink(t) + '" target="_blank" rel="noopener" title="Open on Spotify">&#8599;</a>';
     row.querySelector('.ti-play').addEventListener('click', (e) => {
+            ttsLog('track play clicked', { index: i, title: t.title, artist: t.artist });
       e.stopPropagation(); autoSeq = false; runTrack(i, true, false);
     });
     row.querySelector('.ti-body').addEventListener('click', () => {
@@ -1952,16 +2053,37 @@ STUDIO_HTML = """
 
     async function narrationAudioUrl(i) {
         const t = TRACKS[i];
-        if (t.audio_url) return t.audio_url;
-        if (audioObjectUrls.has(i)) return audioObjectUrls.get(i);
-        if (t.audio_b64) {
-            t.audio_url = 'data:audio/mpeg;base64,' + t.audio_b64;
+        ttsLog('narrationAudioUrl start', { index: i, title: t.title, hasEndpoint: Boolean(TTS_ENDPOINT), hasToken: Boolean(TTS_TOKEN) });
+        if (t.audio_url) {
+            ttsLog('using track audio_url cache', { index: i });
             return t.audio_url;
         }
-        const text = (t.speech || [t.musixmatch_speech, t.audiodb_speech].filter(Boolean).join(' ') || '').trim();
-        if (!text) throw new Error('missing_text');
-        if (!TTS_ENDPOINT || !TTS_TOKEN) throw new Error('elevenlabs_not_configured');
+        if (audioObjectUrls.has(i)) {
+            ttsLog('using object URL cache', { index: i });
+            return audioObjectUrls.get(i);
+        }
+        if (t.audio_b64) {
+            t.audio_url = 'data:audio/mpeg;base64,' + t.audio_b64;
+            ttsLog('using embedded audio_b64', { index: i, bytesApprox: t.audio_b64.length });
+            return t.audio_url;
+        }
+        const primaryText = String(t.speech || '').trim();
+        const fallbackText = [t.musixmatch_speech, t.audiodb_speech]
+            .map(value => String(value || '').trim())
+            .filter(Boolean)
+            .join(' ')
+            .trim();
+        const text = primaryText || fallbackText;
+        if (!text) {
+            ttsLog('blocked before fetch: missing narration text', { index: i });
+            throw new Error('missing_text');
+        }
+        if (!TTS_ENDPOINT || !TTS_TOKEN) {
+            ttsLog('blocked before fetch: missing endpoint or token', { endpoint: TTS_ENDPOINT || '', hasToken: Boolean(TTS_TOKEN) });
+            throw new Error(t.audio_error || 'elevenlabs_not_configured');
+        }
 
+        ttsLog('fetch POST /tts', { endpoint: TTS_ENDPOINT, textChars: text.length, preview: text.slice(0, 80) });
         const response = await fetch(TTS_ENDPOINT, {
             method: 'POST',
             headers: {
@@ -1970,6 +2092,7 @@ STUDIO_HTML = """
             },
             body: JSON.stringify({ text })
         });
+        ttsLog('fetch response', { status: response.status, ok: response.ok, cache: response.headers.get('X-Sonder-TTS-Cache') });
         if (!response.ok) {
             let detail = 'tts_' + response.status;
             try {
@@ -1981,6 +2104,7 @@ STUDIO_HTML = """
         const blob = await response.blob();
         const url = URL.createObjectURL(blob);
         audioObjectUrls.set(i, url);
+        ttsLog('audio blob ready', { index: i, bytes: blob.size, type: blob.type });
         return url;
     }
 
@@ -1989,6 +2113,8 @@ STUDIO_HTML = """
         if (message.includes('elevenlabs_not_configured')) return 'ElevenLabs key missing';
         if (message.includes('missing_text')) return 'Narration text missing';
         if (message.includes('forbidden')) return 'TTS token rejected';
+        if (message.includes('401') || message.includes('invalid')) return 'ElevenLabs key rejected';
+        if (message.includes('quota') || message.includes('429')) return 'ElevenLabs quota or rate limit';
         if (message.includes('NetworkError') || message.includes('Failed to fetch')) return 'TTS server unreachable';
         return 'ElevenLabs audio unavailable';
     }
@@ -1998,16 +2124,20 @@ STUDIO_HTML = """
     if (currentAudio) { try { currentAudio.pause(); } catch (e) {} currentAudio = null; }
 
         try {
+                        ttsLog('speak start', { index: i });
             const audioUrl = await narrationAudioUrl(i);
             if (current !== i) return;
             setStatus('🗣️ Narrating…');
             const audio = new Audio(audioUrl);
       currentAudio = audio;
-      audio.onended = () => { currentAudio = null; onend && onend(); };
-      audio.onerror = () => { currentAudio = null; onend && onend(); };
-      audio.play().catch(() => { currentAudio = null; onend && onend(); });
+            audio.onended = () => { ttsLog('audio ended', { index: i }); currentAudio = null; onend && onend(); };
+            audio.onerror = () => { ttsError('audio element error', audio.error); currentAudio = null; onend && onend(); };
+            audio.play()
+                .then(() => ttsLog('audio playback started', { index: i }))
+                .catch((error) => { ttsError('audio.play rejected', error); currentAudio = null; onend && onend(); });
       return;
         } catch (e) {
+                        ttsError('speak failed', e);
             currentAudio = null;
             setStatus(ttsStatusMessage(e));
             onend && onend();
@@ -2043,6 +2173,7 @@ STUDIO_HTML = """
   }
 
     async function runTrack(i, withVoice, seq) {
+    ttsLog('runTrack', { index: i, withVoice: withVoice, sequence: seq });
     current = i;
     highlight(i);
     showCenter(i);
@@ -2073,6 +2204,7 @@ STUDIO_HTML = """
 
   document.getElementById('playAll').addEventListener('click', () => {
     if (!TRACKS.length) return;
+        ttsLog('play all clicked', { tracks: TRACKS.length, shuffle: shuffleOn });
     stopAudio();
     order = TRACKS.map((_, i) => i);
     if (shuffleOn) shuffleArray(order);
@@ -2153,12 +2285,15 @@ def render_studio_component(studio: dict) -> None:
     tts_endpoint = ""
     tts_token = ""
     if getattr(settings, "elevenlabs_ready", False):
-        try:
-            tts_info = ensure_tts_server()
-            tts_endpoint = tts_info.endpoint
-            tts_token = tts_info.token
-        except TTSServerError as exc:
-            add_llm_log("ElevenLabs TTS endpoint failed", str(exc))
+        if use_embedded_tts_audio():
+            embed_tts_audio_for_tracks(tracks)
+        else:
+            try:
+                tts_info = ensure_tts_server()
+                tts_endpoint = tts_info.endpoint
+                tts_token = tts_info.token
+            except TTSServerError as exc:
+                add_llm_log("ElevenLabs TTS endpoint failed", str(exc))
     payload = [
         {
             "title": t.get("title", ""),
@@ -2172,6 +2307,7 @@ def render_studio_component(studio: dict) -> None:
             "image": t.get("image", ""),
             "uri": t.get("uri", ""),
             "audio_b64": t.get("audio_b64", ""),
+            "audio_error": t.get("audio_error", ""),
             "lyrics": t.get("lyrics", ""),
             "richsync": t.get("richsync", []),
             "track_id": t.get("track_id", ""),

@@ -124,11 +124,14 @@ Messaggi:
 
 Regole:
 - Se l'utente cita titolo/artista, usa q_track e q_artist.
-- Per temi crea fino a 20 query incentrate su parole/immagini del tema, NON su emozioni generiche.
-- Le query devono coprire lingue europee e asiatiche, ma ogni singola q_lyrics deve essere in una sola lingua.
-- Metti in q_lyrics frasi brevi, leggibili, anche sarcastiche/allusive: ghost of you, empty bed, thanks for nothing, grazie di niente, gracias por nada.
-- Per richieste tematiche lascia q vuoto: NON suggerire generi, stili, strumenti, tempo o estetiche sonore.
-- Usa q solo se l'utente chiede esplicitamente un genere, una lingua o un periodo storico.
+- Se needs_search=true crea SEMPRE ESATTAMENTE 20 query.
+- Per temi crea query incentrate su parole/immagini del tema, NON su emozioni generiche.
+- Per qualsiasi tema storico, tecnico, geografico, sociale o politico alza il livello di precisione: usa lessico documentario e materiale, non formule vaghe. Esempi: trincea, fronte, soldati, partigiani, resistenza, armistizio, bombardamenti, barricate, esilio, prigionieri, rivoluzione, embargo, propaganda, confine, occupazione.
+- Se l'utente cita un contesto come luogo, evento, periodo, movimento o fazione, usalo per scegliere parole tecniche coerenti, ma non trasformare ogni query in una formula rigida o identica.
+- Le query devono coprire lingue europee e asiatiche (EN, IT, FR, ES, DE, PT, JA, KO, ZH; non usare hindi), ma ogni singola q_lyrics deve essere in una sola lingua.
+- Metti in q_lyrics frasi brevi e leggibili. Gli esempi sarcastici/allusivi (ghost of you, empty bed, thanks for nothing, grazie di niente, gracias por nada) valgono solo per temi personali, non per temi storici o tecnici.
+- Per richieste tematiche generiche lascia q vuoto: NON suggerire generi, stili, strumenti, tempo o estetiche sonore.
+- Usa q solo per vincoli espliciti di genere, lingua o periodo; non usare q per stati d'animo.
 - Evita parole inutili: canzoni, brani, playlist, consigliami.
 - Evita etichette generiche o letterali: sad, emotional, melancholic, heartbreak, loss, broken heart, triste, goodbye, addio, adieu, adios.
 - Non inventare titoli o artisti.
@@ -146,11 +149,11 @@ Schema:
       "q_track": "",
       "q_artist": "",
       "q_lyrics": "",
-    "reason": ""
+            "reason": ""
     }}
   ]
 }}
-Usa limit 1-10 per il numero massimo di tracce finali, non per il numero di query. Se non serve cercare, needs_search=false e queries=[]."""
+Usa limit 1-10 per il numero massimo di tracce finali, non per il numero di query. Se needs_search=true restituisci sempre 20 query. Se non serve cercare, needs_search=false e queries=[]."""
 
 
 MUSIXMATCH_RESPONSE_TEMPLATE = """Richiesta: {prompt}
@@ -212,6 +215,101 @@ Rispondi SOLO con un array JSON valido, senza testo prima o dopo, nel formato:
 
 
 THEME_QUERY_BANK: tuple[tuple[set[str], list[dict[str, str]]], ...] = (
+    (
+        {
+            "vietnam",
+            "vietnam war",
+            "viet nam",
+            "nam war",
+            "ho chi minh",
+            "saigon",
+            "mekong",
+            "napalm",
+            "vietcong",
+            "viet cong",
+            "guerra del vietnam",
+            "guerra de vietnam",
+            "guerre du vietnam",
+            "vietnamkrieg",
+        },
+        [
+            {"cluster": "napalm", "lang": "EN", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "napalm sunrise", "reason": "napalm imagery"},
+            {"cluster": "trail", "lang": "EN", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "ho chi minh trail", "reason": "supply route"},
+            {"cluster": "mekong", "lang": "EN", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "cigarette smoke Mekong", "reason": "river patrol"},
+            {"cluster": "saigon", "lang": "EN", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "Saigon night", "reason": "city at war"},
+            {"cluster": "soldiers", "lang": "EN", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "soldiers in the jungle", "reason": "jungle soldiers"},
+            {"cluster": "napalm", "lang": "IT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "napalm Vietnam", "reason": "immagini del conflitto"},
+            {"cluster": "saigon", "lang": "IT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "notte Saigon", "reason": "città in guerra"},
+            {"cluster": "soldiers", "lang": "IT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "soldati nella giungla", "reason": "fronte tropicale"},
+            {"cluster": "soldiers", "lang": "IT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "gruppi di soldati", "reason": "presenza militare"},
+            {"cluster": "trail", "lang": "FR", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "piste Ho Chi Minh", "reason": "route militaire"},
+            {"cluster": "napalm", "lang": "FR", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "napalm Vietnam", "reason": "guerre aerienne"},
+            {"cluster": "saigon", "lang": "ES", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "noche Saigon", "reason": "ciudad en guerra"},
+            {"cluster": "mekong", "lang": "ES", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "humo sobre Mekong", "reason": "rio militarizado"},
+            {"cluster": "napalm", "lang": "DE", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "napalm Vietnam", "reason": "luftkrieg bild"},
+            {"cluster": "trail", "lang": "DE", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "Ho Chi Minh Pfad", "reason": "versorgungsroute"},
+            {"cluster": "mekong", "lang": "PT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "fumaça no Mekong", "reason": "rio em guerra"},
+            {"cluster": "saigon", "lang": "JA", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "サイゴンの夜", "reason": "戦時の都市"},
+            {"cluster": "napalm", "lang": "JA", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "ナパーム ベトナム", "reason": "空爆の記憶"},
+            {"cluster": "saigon", "lang": "KO", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "사이공의 밤", "reason": "전쟁의 도시"},
+            {"cluster": "trail", "lang": "ZH", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "胡志明小道", "reason": "补给路线"},
+        ],
+    ),
+    (
+        {
+            "war",
+            "wars",
+            "battle",
+            "battles",
+            "fight",
+            "fighting",
+            "struggle",
+            "conflict",
+            "guerra",
+            "guerre",
+            "lotta",
+            "lotte",
+            "battaglia",
+            "battaglie",
+            "conflitto",
+            "conflitti",
+            "rivoluzione",
+            "resistenza",
+            "partigiani",
+            "fronte",
+            "trincea",
+            "batalla",
+            "guerre sans fin",
+            "combat",
+            "krieg",
+            "wojna",
+            "戦争",
+            "战争",
+            "전쟁",
+        },
+        [
+            {"cluster": "trenches", "lang": "EN", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "trenches barbed wire", "reason": "frontline imagery"},
+            {"cluster": "war_machine", "lang": "EN", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "war machine", "reason": "industrial conflict"},
+            {"cluster": "ceasefire", "lang": "EN", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "ceasefire never came", "reason": "failed truce"},
+            {"cluster": "trenches", "lang": "IT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "trincea filo spinato", "reason": "immagini dal fronte"},
+            {"cluster": "resistance", "lang": "IT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "partigiani resistenza", "reason": "lotta organizzata"},
+            {"cluster": "bombings", "lang": "IT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "bombardamenti città", "reason": "città sotto attacco"},
+            {"cluster": "barricades", "lang": "ES", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "barricadas pueblo", "reason": "revuelta civile"},
+            {"cluster": "soldiers", "lang": "ES", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "soldados frontera", "reason": "confine militarizzato"},
+            {"cluster": "combat", "lang": "FR", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "combat sans pitié", "reason": "scontro diretto"},
+            {"cluster": "resistance", "lang": "FR", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "résistance barricades", "reason": "rivolta organizzata"},
+            {"cluster": "war_machine", "lang": "DE", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "krieg maschine", "reason": "apparato bellico"},
+            {"cluster": "soldiers", "lang": "DE", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "front soldaten", "reason": "soldati al fronte"},
+            {"cluster": "endless_war", "lang": "PT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "guerra sem fim", "reason": "conflitto prolungato"},
+            {"cluster": "struggle", "lang": "PT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "povo em luta", "reason": "lotta collettiva"},
+            {"cluster": "war_shadow", "lang": "JA", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "戦争の影", "reason": "戦争の余波"},
+            {"cluster": "battlefield", "lang": "JA", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "戦場の兵士", "reason": "前線の兵士"},
+            {"cluster": "war_shadow", "lang": "KO", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "전쟁의 그림자", "reason": "전쟁의 여파"},
+            {"cluster": "struggle", "lang": "KO", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "투쟁의 거리", "reason": "거리의 투쟁"},
+            {"cluster": "war_shadow", "lang": "ZH", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "战争的阴影", "reason": "战争余波"},
+            {"cluster": "battle_horn", "lang": "ZH", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "战斗的号角", "reason": "集结信号"},
+        ],
+    ),
     (
         {
             "heartbreak",
@@ -474,12 +572,57 @@ SHALLOW_THEME_TERMS = {
     "sem você",
 }
 
-THEME_QUERY_LANGUAGE_ORDER = ("EN", "IT", "FR", "ES", "DE", "PT", "JA", "KO", "ZH", "HI")
+THEME_QUERY_LANGUAGE_ORDER = ("EN", "IT", "FR", "ES", "DE", "PT", "JA", "KO", "ZH")
+MUSIXMATCH_SEARCH_QUERY_COUNT = 20
 EUROPEAN_QUERY_LANGS = {"EN", "IT", "FR", "ES", "DE", "PT"}
-ASIAN_QUERY_LANGS = {"JA", "KO", "ZH", "HI"}
+ASIAN_QUERY_LANGS = {"JA", "KO", "ZH"}
+MUSIXMATCH_QUERY_FILLER_STOPWORDS = {
+    "about",
+    "song",
+    "songs",
+    "music",
+    "playlist",
+    "recommend",
+    "suggest",
+    "canzone",
+    "canzoni",
+    "brano",
+    "brani",
+    "musica",
+    "playlist",
+    "consigliami",
+    "suggerisci",
+    "su",
+    "sul",
+    "sulla",
+    "sugli",
+    "sulle",
+    "del",
+    "della",
+    "dei",
+    "des",
+    "sur",
+    "sobre",
+    "acerca",
+    "uber",
+    "ueber",
+}
 THEME_QUERY_CLUSTER_ORDER = (
     "afterimage",
     "hour",
+    "trenches",
+    "war_machine",
+    "ceasefire",
+    "resistance",
+    "bombings",
+    "barricades",
+    "soldiers",
+    "combat",
+    "endless_war",
+    "struggle",
+    "war_shadow",
+    "battlefield",
+    "battle_horn",
     "sarcasm",
     "mask",
     "room",
@@ -553,11 +696,11 @@ def _theme_queries_for_text(text: str) -> list[dict[str, str]]:
     rng.shuffle(asian)
 
     mixed: list[dict[str, str]] = []
-    while len(mixed) < 20 and (european or asian):
+    while len(mixed) < MUSIXMATCH_SEARCH_QUERY_COUNT and (european or asian):
         pools = [pool for pool in (european, asian) if pool]
         rng.shuffle(pools)
         for pool in pools:
-            if pool and len(mixed) < 20:
+            if pool and len(mixed) < MUSIXMATCH_SEARCH_QUERY_COUNT:
                 mixed.append(pool.pop())
     return mixed
 
@@ -589,6 +732,77 @@ def _dedupe_queries(queries: list[dict[str, str]]) -> list[dict[str, str]]:
         seen.add(key)
         result.append(query)
     return result
+
+
+def _meaningful_query_terms(text: str) -> list[str]:
+    tokens = re.findall(r"[\w'’À-ÖØ-öø-ÿ]+", text, flags=re.UNICODE)
+    terms: list[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        normalized = token.strip("'’_").casefold()
+        if len(normalized) < 2 or normalized in MUSIXMATCH_QUERY_FILLER_STOPWORDS:
+            continue
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        terms.append(token.strip("'’_"))
+    return terms
+
+
+def _fallback_queries_for_text(text: str) -> list[dict[str, str]]:
+    terms = _meaningful_query_terms(text)
+    if not terms:
+        clean_text = " ".join(text.split())
+        terms = [clean_text] if clean_text else []
+    if not terms:
+        return []
+
+    fragments: list[str] = []
+    for width in range(min(4, len(terms)), 0, -1):
+        for start in range(0, len(terms) - width + 1):
+            fragments.append(" ".join(terms[start:start + width]))
+    if len(terms) > 1:
+        fragments.append(" ".join(reversed(terms[: min(4, len(terms))])))
+    fragments.extend(terms)
+
+    queries: list[dict[str, str]] = []
+    seen_fragments: set[str] = set()
+    for fragment in fragments:
+        normalized = fragment.casefold()
+        if not normalized or normalized in seen_fragments:
+            continue
+        seen_fragments.add(normalized)
+        queries.append({"q": "", "q_track": "", "q_artist": "", "q_lyrics": fragment, "reason": "tema richiesto"})
+    return queries
+
+
+def _ensure_query_count(
+    queries: list[dict[str, str]],
+    source_text: str,
+    *,
+    needs_search: bool,
+    count: int = MUSIXMATCH_SEARCH_QUERY_COUNT,
+) -> list[dict[str, str]]:
+    if not needs_search:
+        return []
+
+    normalized = _dedupe_queries(queries)
+    for candidate in [*_theme_queries_for_text(source_text), *_fallback_queries_for_text(source_text)]:
+        if len(normalized) >= count:
+            break
+        expanded = _dedupe_queries(normalized + [candidate])
+        if len(expanded) > len(normalized):
+            normalized = expanded
+
+    if normalized and len(normalized) < count:
+        index = 0
+        while len(normalized) < count:
+            clone = dict(normalized[index % len(normalized)])
+            clone["reason"] = clone.get("reason") or "variante ricerca"
+            normalized.append(clone)
+            index += 1
+
+    return normalized[:count]
 
 
 class Storyteller:
@@ -797,20 +1011,26 @@ class Storyteller:
                 }
                 if any(query[k] for k in ("q", "q_track", "q_artist", "q_lyrics")):
                     queries.append(query)
-        if as_bool(data.get("needs_search"), True) and not queries and last_user:
+        has_router_queries = bool(queries)
+        needs_search = as_bool(data.get("needs_search"), True)
+        if needs_search and not queries and last_user:
             queries.append({"q": last_user, "q_track": "", "q_artist": "", "q_lyrics": "", "reason": ""})
         has_explicit_track = any(query.get("q_track") or query.get("q_artist") for query in queries)
         theme_queries = _theme_queries_for_text(last_user)
         if theme_queries and not has_explicit_track:
-            queries = _dedupe_queries(theme_queries)
+            if has_router_queries:
+                queries = _dedupe_queries(queries + theme_queries)
+            else:
+                queries = _dedupe_queries(theme_queries)
             limit = 10
         else:
             queries = _dedupe_queries(queries)
+        queries = _ensure_query_count(queries, last_user, needs_search=needs_search)
         return {
             "music_related": as_bool(data.get("music_related"), True),
-            "needs_search": as_bool(data.get("needs_search"), True),
+            "needs_search": needs_search,
             "limit": limit,
-            "queries": queries[:20],
+            "queries": queries,
         }
 
     def _fallback_musixmatch_plan(self, last_user: str, reason: str = "") -> dict[str, Any]:
@@ -829,7 +1049,7 @@ class Storyteller:
             "music_related": True,
             "needs_search": bool(queries),
             "limit": 10,
-            "queries": _dedupe_queries(queries)[:20],
+            "queries": _ensure_query_count(queries, last_user, needs_search=bool(queries)),
             "_router_fallback": reason or "Used local Musixmatch query fallback.",
         }
 
