@@ -27,6 +27,7 @@ lo stesso filo conduttore narrativo (l'ombra, la redenzione, il conflitto umano)
 | Catalogo & testi | API Musixmatch |
 | Biografie & media | API TheAudioDB |
 | Motore di ragionamento | LLM "Thinking" (DeepSeek-R1 via OpenRouter, oppure OpenAI o3-mini) |
+| Voce narrante | ElevenLabs TTS (MP3 generati lato server) |
 | Automazione musicale | API Spotify (spotipy) |
 
 ---
@@ -45,6 +46,9 @@ lo stesso filo conduttore narrativo (l'ombra, la redenzione, il conflitto umano)
             ▼
 [ LLM Thinking ] ─► decodifica slang/metafore, fonde col bio,
                     genera analisi psicologica + micro-racconto (Markdown)
+            │
+            ▼
+[ ElevenLabs ] ─► MP3 della voce narrante, senza fallback Web Speech nel browser
             │
             ▼
 [ Spotify ] ─► genera/aggiorna la playlist tematica
@@ -105,6 +109,7 @@ streamlit run app.py
 | `MUSIXMATCH_API_KEY` | https://developer.musixmatch.com/ | per i testi |
 | `AUDIODB_API_KEY` | https://www.theaudiodb.com/ (test = `2`) | opzionale |
 | `LLM_API_KEY` | https://openrouter.ai/ o https://platform.openai.com/ | per l'analisi |
+| `ELEVENLABS_API_KEY` / `ELEVENLABS_VOICE_ID` | https://elevenlabs.io/ | per la voce narrante |
 | `SPOTIFY_CLIENT_ID` / `SPOTIFY_CLIENT_SECRET` | https://developer.spotify.com/dashboard | per le playlist |
 
 ---

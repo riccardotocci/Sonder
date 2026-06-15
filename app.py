@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import html
 import json
+import logging
 import time
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,8 @@ from core.storyteller import Storyteller, StorytellerError
 from core.spotify_client import SpotifyClient, SpotifyError
 from core.elevenlabs_client import ElevenLabsClient, ElevenLabsError
 from core import spotify_pkce
+
+logger = logging.getLogger("sonder.llm")
 
 # --------------------------------------------------------------------------- #
 # Logo helpers
@@ -82,24 +85,6 @@ LANGUAGES: dict[str, tuple[str, str]] = {
     "中文": ("中文", "CN"),
     "한국어": ("한국어", "KR"),
     "العربية": ("العربية", "AR"),
-}
-
-# Lingua di narrazione -> codice BCP-47 per la sintesi vocale del browser (Web Speech API).
-TTS_LANG: dict[str, str] = {
-    "Auto": "",
-    "Italiano": "it-IT",
-    "English": "en-US",
-    "Français": "fr-FR",
-    "Español": "es-ES",
-    "Deutsch": "de-DE",
-    "Português": "pt-PT",
-    "Nederlands": "nl-NL",
-    "Polski": "pl-PL",
-    "Русский": "ru-RU",
-    "日本語": "ja-JP",
-    "中文": "zh-CN",
-    "한국어": "ko-KR",
-    "العربية": "ar-SA",
 }
 
 # Saluto iniziale della chat per ciascuna lingua (per "Auto" usiamo un saluto bilingue).
@@ -513,6 +498,34 @@ def render_status_sidebar() -> None:
     st.sidebar.markdown("---")
 
 
+def reset_llm_log() -> None:
+    st.session_state["llm_log"] = []
+
+
+def add_llm_log(step: str, detail: str = "") -> None:
+    entries = st.session_state.setdefault("llm_log", [])
+    entries.append({"step": step, "detail": detail})
+    logger.info("LLM step: %s%s", step, f" | {detail}" if detail else "")
+
+
+def current_llm_log() -> list[dict[str, str]]:
+    return list(st.session_state.get("llm_log") or [])
+
+
+def render_llm_log(entries: list[dict[str, str]] | None = None) -> None:
+    logs = entries if entries is not None else current_llm_log()
+    if not logs:
+        return
+    with st.expander("LLM execution log", expanded=False):
+        for index, item in enumerate(logs, start=1):
+            step = html.escape(str(item.get("step", "Step")))
+            detail = html.escape(str(item.get("detail", ""))).replace("\n", "<br>")
+            body = f"<b>{index}. {step}</b>"
+            if detail:
+                body += f"<br><span style=\"color:#8f8aa8;\">{detail}</span>"
+            st.markdown(body, unsafe_allow_html=True)
+
+
 # --------------------------------------------------------------------------- #
 # Tool musicali (contesto + playlist)
 # --------------------------------------------------------------------------- #
@@ -860,7 +873,13 @@ def render_spotify_login(container) -> None:
 # --------------------------------------------------------------------------- #
 def empty_studio(prompt: str) -> dict:
     """Struttura vuota della regia (usata quando manca l'LLM o non ci sono brani)."""
-    return {"prompt": prompt, "tracks": [], "summary": "", "moods": []}
+    return {
+        "prompt": prompt,
+        "tracks": [],
+        "summary": "",
+        "moods": [],
+        "llm_log": current_llm_log(),
+    }
 
 
 def enrich_tracks_with_audiodb_facts(
@@ -986,12 +1005,24 @@ def build_studio(
     # 2) Discorsi parlati + mood + origine geografica + riassunto (una sola chiamata LLM).
     #    I track dict includono ora _bio e lyrics, usati da studio_brief().
     if settings.llm_ready:
+        add_llm_log(
+            "Studio brief",
+            f"Generating narrated speeches, moods and artist origins for {len(enriched)} tracks.",
+        )
         try:
             brief = Storyteller().studio_brief(
                 title=prompt, tracks=enriched, language=lang_name
             )
+            add_llm_log(
+                "Studio brief parsed",
+                f"Received {len(brief.get('narrations') or [])} narrations and {len(brief.get('moods') or [])} mood labels.",
+            )
         except StorytellerError:
             brief = {}
+            add_llm_log(
+                "Studio brief failed",
+                "The app will keep the playlist and skip generated narration metadata.",
+            )
         narrations = brief.get("narrations") or []
         for i, t in enumerate(enriched):
             n = narrations[i] if i < len(narrations) else {}
@@ -1027,6 +1058,7 @@ def build_studio(
     # Uses getattr so the block is skipped safely if the module cache is stale.
     try:
         if getattr(settings, "elevenlabs_ready", False):
+            generated_audio = 0
             el = ElevenLabsClient()
             for t in enriched:
                 speech = t.get("speech", "").strip()
@@ -1034,12 +1066,29 @@ def build_studio(
                     try:
                         audio_bytes = el.text_to_speech(speech)
                         t["audio_b64"] = base64.b64encode(audio_bytes).decode()
+                        generated_audio += 1
                     except Exception:
                         t["audio_b64"] = ""
+            add_llm_log(
+                "ElevenLabs TTS",
+                f"Generated MP3 narration for {generated_audio}/{len(enriched)} tracks.",
+            )
+        else:
+            add_llm_log(
+                "ElevenLabs TTS",
+                "ELEVENLABS_API_KEY is missing: browser voice fallback is disabled.",
+            )
     except Exception:
+        add_llm_log("ElevenLabs TTS failed", "Narration MP3 generation did not complete.")
         pass
 
-    return {"prompt": prompt, "tracks": enriched, "summary": summary, "moods": moods}
+    return {
+        "prompt": prompt,
+        "tracks": enriched,
+        "summary": summary,
+        "moods": moods,
+        "llm_log": current_llm_log(),
+    }
 
 
 STUDIO_HTML = """
@@ -1210,7 +1259,6 @@ STUDIO_HTML = """
 
 <script>
   const TRACKS = __TRACKS__;
-  const TTSLANG = "__TTSLANG__";
   const TOKEN = __TOKEN__;
   const PLAYLIST_NAME = __PLAYLIST__;
   const PALETTE = ["#ff2d78","#f97316","#22d3ee","#facc15","#c2410c","#34d399"];
@@ -1462,9 +1510,8 @@ STUDIO_HTML = """
     return '';
   }
 
-  // ---- Audio: voce (ElevenLabs MP3 o Web Speech fallback) + Spotify ----
+    // ---- Audio: voce ElevenLabs MP3 + Spotify ----
   function stopAudio() {
-    try { window.speechSynthesis.cancel(); } catch (e) {}
     if (currentAudio) {
       try { currentAudio.pause(); currentAudio.currentTime = 0; } catch (e) {}
       currentAudio = null;
@@ -1477,11 +1524,9 @@ STUDIO_HTML = """
 
   function speak(text, audioB64, onend) {
     // Stop anything currently playing.
-    try { window.speechSynthesis.cancel(); } catch (e) {}
     if (currentAudio) { try { currentAudio.pause(); } catch (e) {} currentAudio = null; }
 
     if (audioB64) {
-      // ElevenLabs pre-rendered MP3.
       const audio = new Audio('data:audio/mpeg;base64,' + audioB64);
       currentAudio = audio;
       audio.onended = () => { currentAudio = null; onend && onend(); };
@@ -1490,14 +1535,8 @@ STUDIO_HTML = """
       return;
     }
 
-    // Fallback: browser Web Speech API.
-    if (!text) { onend && onend(); return; }
-    const u = new SpeechSynthesisUtterance(text);
-    if (TTSLANG) u.lang = TTSLANG;
-    u.rate = 0.98; u.pitch = 1.0;
-    u.onend = () => onend && onend();
-    u.onerror = () => onend && onend();
-    window.speechSynthesis.speak(u);
+    setStatus('ElevenLabs audio unavailable');
+    onend && onend();
   }
 
   async function startSong(i, seq) {
@@ -1633,8 +1672,8 @@ STUDIO_HTML = """
 """
 
 
-def render_studio_component(studio: dict, tts_lang: str) -> None:
-    """Renderizza la regia a 3 colonne con sintesi vocale e player Spotify per-utente."""
+def render_studio_component(studio: dict) -> None:
+    """Renderizza la regia a 3 colonne con voce ElevenLabs e player Spotify per-utente."""
     tracks = studio.get("tracks", [])
     payload = [
         {
@@ -1662,7 +1701,6 @@ def render_studio_component(studio: dict, tts_lang: str) -> None:
     token_json = json.dumps(spotify_token())
     rendered = (
         STUDIO_HTML.replace("__TRACKS__", tracks_json)
-        .replace("__TTSLANG__", tts_lang or "")
         .replace("__PLAYLIST__", playlist_name)
         .replace("__TOKEN__", token_json)
     )
@@ -1757,9 +1795,7 @@ def render_message(index: int, msg: dict) -> None:
     with st.chat_message(msg["role"], avatar=avatar):
         st.markdown(msg["content"])
 
-        if msg.get("reasoning"):
-            with st.expander("🧠 Model reasoning chain", expanded=False):
-                st.markdown(msg["reasoning"])
+        render_llm_log(msg.get("llm_log"))
 
         tracks = msg.get("tracks") or []
         if tracks:
@@ -1783,20 +1819,25 @@ def init_chat(ui_language: str) -> None:
     greeting = GREETINGS.get(lang_name, GREETINGS["Italiano"])
     st.session_state["messages"] = [{"role": "assistant", "content": greeting}]
     st.session_state.pop("studio", None)
+    reset_llm_log()
 
 
 def handle_user_input(prompt: str, lang_name: str, lang_code: str) -> None:
     """Elabora il messaggio utente: conversazione + eventuale costruzione dello studio."""
+    reset_llm_log()
+    add_llm_log("User request", prompt)
     st.session_state["messages"].append({"role": "user", "content": prompt})
 
     # Senza LLM mostriamo comunque la struttura della regia con tab/sezioni vuote.
     if not settings.llm_ready:
+        add_llm_log("LLM skipped", "LLM_API_KEY is missing; the reasoning pipeline cannot run.")
         st.session_state["messages"].append(
             {
                 "role": "assistant",
                 "content": "LLM not configured: set `LLM_API_KEY` (and "
                 "`LLM_BASE_URL`/`LLM_MODEL`) in `.env` to populate the studio. "
                 "Showing empty structure for now.",
+                "llm_log": current_llm_log(),
             }
         )
         st.session_state["studio"] = empty_studio(prompt)
@@ -1815,16 +1856,39 @@ def handle_user_input(prompt: str, lang_name: str, lang_code: str) -> None:
                 language=lang_name,
                 context=st.session_state.get("context", ""),
             )
+            queries = plan.get("queries") or []
+            query_details: list[str] = []
+            for query in queries:
+                if not isinstance(query, dict):
+                    continue
+                bits = [
+                    str(query.get("q", "")).strip(),
+                    str(query.get("q_track", "")).strip(),
+                    str(query.get("q_artist", "")).strip(),
+                    str(query.get("q_lyrics", "")).strip(),
+                ]
+                compact = " | ".join(bit for bit in bits if bit)
+                if compact:
+                    query_details.append(compact)
+            add_llm_log(
+                "Search router",
+                f"music_related={plan.get('music_related', True)}, "
+                f"needs_search={plan.get('needs_search', True)}, "
+                f"limit={plan.get('limit', 8)}"
+                + ("\nQueries: " + "; ".join(query_details) if query_details else ""),
+            )
         except StorytellerError as exc:
+            add_llm_log("Search router failed", user_facing_llm_error(exc))
             st.session_state["messages"].append(
-                {"role": "assistant", "content": user_facing_llm_error(exc)}
+                {"role": "assistant", "content": user_facing_llm_error(exc), "llm_log": current_llm_log()}
             )
             st.session_state["studio"] = empty_studio(prompt)
             return
 
     if not plan.get("music_related", True):
         key = lang_name if lang_name in REFUSALS else "Italiano"
-        st.session_state["messages"].append({"role": "assistant", "content": REFUSALS[key]})
+        add_llm_log("Scope check", "The request was classified as outside the music domain.")
+        st.session_state["messages"].append({"role": "assistant", "content": REFUSALS[key], "llm_log": current_llm_log()})
         return
 
     if not plan.get("needs_search", True):
@@ -1839,9 +1903,14 @@ def handle_user_input(prompt: str, lang_name: str, lang_code: str) -> None:
                     context=st.session_state.get("context", ""),
                 )
                 text, _ = Storyteller.extract_playlist(content)
+                add_llm_log(
+                    "Conversation response",
+                    "Generated a direct music-domain answer without a Musixmatch search.",
+                )
             except StorytellerError as exc:
+                add_llm_log("Conversation response failed", user_facing_llm_error(exc))
                 st.session_state["messages"].append(
-                    {"role": "assistant", "content": user_facing_llm_error(exc)}
+                    {"role": "assistant", "content": user_facing_llm_error(exc), "llm_log": current_llm_log()}
                 )
                 st.session_state["studio"] = empty_studio(prompt)
                 return
@@ -1849,14 +1918,23 @@ def handle_user_input(prompt: str, lang_name: str, lang_code: str) -> None:
             key = lang_name if lang_name in REFUSALS else "Italiano"
             text = text.replace("[NON_MUSICALE]", "").strip() or REFUSALS[key]
         st.session_state["messages"].append(
-            {"role": "assistant", "content": text, "reasoning": reasoning, "tracks": []}
+            {"role": "assistant", "content": text, "reasoning": reasoning, "tracks": [], "llm_log": current_llm_log()}
         )
         st.session_state["studio"] = empty_studio(prompt)
         return
 
     tracks, notes = search_musixmatch_from_plan(plan)
+    add_llm_log(
+        "Musixmatch search",
+        f"Found {len(tracks)} tracks." + ("\n" + "\n".join(notes) if notes else ""),
+    )
     if tracks:
         notes.extend(enrich_tracks_with_audiodb_facts(tracks, lang_code))
+        add_llm_log(
+            "TheAudioDB enrichment",
+            f"Processed curiosities for {len(tracks)} tracks."
+            + ("\n" + "\n".join(notes) if notes else ""),
+        )
 
     with st.spinner("Rewriting from Musixmatch lyrics..."):
         try:
@@ -1866,9 +1944,14 @@ def handle_user_input(prompt: str, lang_name: str, lang_code: str) -> None:
                 language=lang_name,
                 context=st.session_state.get("context", ""),
             )
+            add_llm_log(
+                "Response writer",
+                "Composed the assistant answer using only the Musixmatch results provided.",
+            )
         except StorytellerError as exc:
+            add_llm_log("Response writer failed", user_facing_llm_error(exc))
             st.session_state["messages"].append(
-                {"role": "assistant", "content": user_facing_llm_error(exc), "tracks": tracks}
+                {"role": "assistant", "content": user_facing_llm_error(exc), "tracks": tracks, "llm_log": current_llm_log()}
             )
             st.session_state["studio"] = build_studio(prompt, tracks, lang_name, lang_code) if tracks else empty_studio(prompt)
             return
@@ -1877,7 +1960,7 @@ def handle_user_input(prompt: str, lang_name: str, lang_code: str) -> None:
         text = text + "\n\n" + "\n".join(f"> {note}" for note in notes)
 
     st.session_state["messages"].append(
-        {"role": "assistant", "content": text, "reasoning": reasoning, "tracks": tracks}
+        {"role": "assistant", "content": text, "reasoning": reasoning, "tracks": tracks, "llm_log": current_llm_log()}
     )
 
     if tracks:
@@ -2012,6 +2095,7 @@ def main() -> None:
     if has_tracks:
         # Studio pieno: mostra solo il titolo del prompt e la regia.
         render_studio_title(studio["prompt"])
+        render_llm_log(studio.get("llm_log"))
     else:
         st.markdown('<hr class="hr-glow">', unsafe_allow_html=True)
         # Mostra i messaggi della conversazione (indice 0 = saluto iniziale, nascosto).
@@ -2030,7 +2114,7 @@ def main() -> None:
                 "Log in to your Spotify in the sidebar to enable the player "
                 "and add the playlist to your profile."
             )
-        render_studio_component(studio, TTS_LANG.get(ui_language, ""))
+        render_studio_component(studio)
         # Sezioni informative (scorrendo verso il basso)
         render_studio_sections(studio)
 

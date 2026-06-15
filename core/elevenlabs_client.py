@@ -20,12 +20,14 @@ class ElevenLabsClient:
     BASE_URL = "https://api.elevenlabs.io/v1"
     DEFAULT_VOICE = "JBFqnCBsd6RMkjVDRZzb"   # George — warm, narrative
     DEFAULT_MODEL = "eleven_multilingual_v2"
+    DEFAULT_OUTPUT_FORMAT = "mp3_44100_128"
 
     def text_to_speech(
         self,
         text: str,
         voice_id: str | None = None,
         model_id: str | None = None,
+        output_format: str | None = None,
     ) -> bytes:
         """Return MP3 audio bytes for *text*.
 
@@ -36,6 +38,7 @@ class ElevenLabsClient:
 
         vid = voice_id or settings.elevenlabs_voice_id or self.DEFAULT_VOICE
         mid = model_id or self.DEFAULT_MODEL
+        out = output_format or self.DEFAULT_OUTPUT_FORMAT
         url = f"{self.BASE_URL}/text-to-speech/{vid}"
 
         headers = {
@@ -53,7 +56,13 @@ class ElevenLabsClient:
         }
 
         try:
-            r = requests.post(url, headers=headers, json=payload, timeout=60)
+            r = requests.post(
+                url,
+                headers=headers,
+                params={"output_format": out},
+                json=payload,
+                timeout=60,
+            )
         except requests.RequestException as exc:
             raise ElevenLabsError(f"Network error: {exc}") from exc
 
