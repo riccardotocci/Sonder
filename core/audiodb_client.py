@@ -1,9 +1,9 @@
 """Client per le API TheAudioDB.
 
 Recupera biografie multilingua e immagini degli artisti.
-Documentazione: https://www.theaudiodb.com/api_guide.php
+Documentazione: https://www.theaudiodb.com/free_music_api
 
-La chiave di test gratuita e' "2" (endpoint pubblico, rate-limited).
+La chiave di test gratuita v1 e' "123" (endpoint pubblico, rate-limited).
 """
 from __future__ import annotations
 
@@ -108,7 +108,7 @@ class AudioDBClient:
     """Wrapper minimale sulle API REST di TheAudioDB."""
 
     def __init__(self, api_key: Optional[str] = None, timeout: int = 15) -> None:
-        self.api_key = (api_key if api_key is not None else settings.audiodb_api_key) or "2"
+        self.api_key = (api_key if api_key is not None else settings.audiodb_api_key) or "123"
         self.timeout = timeout
         self.session = requests.Session()
 

@@ -30,8 +30,8 @@ class Settings:
         default_factory=lambda: _env("MUSIXMATCH_API_KEY") or _env("MXM_KEY")
     )
 
-    # --- TheAudioDB ("2" = chiave di test pubblica gratuita) ---
-    audiodb_api_key: str = field(default_factory=lambda: _env("AUDIODB_API_KEY", "2"))
+    # --- TheAudioDB ("123" = chiave di test pubblica gratuita v1) ---
+    audiodb_api_key: str = field(default_factory=lambda: _env("AUDIODB_API_KEY", "123"))
 
     # --- Last.fm API (biografie + statistiche ascolto) ---
     # Ottieni la chiave su https://www.last.fm/api/account/create

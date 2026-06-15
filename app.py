@@ -529,6 +529,97 @@ def render_llm_log(entries: list[dict[str, str]] | None = None) -> None:
 # --------------------------------------------------------------------------- #
 # Tool musicali (contesto + playlist)
 # --------------------------------------------------------------------------- #
+def fetch_audiodb_track_text(
+    client: AudioDBClient,
+    *,
+    artist: str,
+    title: str = "",
+    album: str = "",
+    lang_code: str = "EN",
+) -> str:
+    """Recupera contesto TheAudioDB anche con versioni vecchie del client."""
+    def clean(text: str, limit: int = 900) -> str:
+        text = " ".join((text or "").split())
+        if len(text) <= limit:
+            return text
+        return text[:limit].rsplit(" ", 1)[0].rstrip(".,;:") + "..."
+
+    def first_present(data: dict[str, Any], fields: tuple[str, ...]) -> str:
+        for field_name in fields:
+            value = (data.get(field_name) or "").strip()
+            if value:
+                return value
+        return ""
+
+    def localized_description(data: dict[str, Any]) -> str:
+        lang = lang_code.upper()
+        fields = (
+            f"strDescription{lang}",
+            "strDescriptionEN",
+            "strDescriptionIT",
+            "strDescriptionES",
+            "strDescriptionFR",
+            "strDescriptionDE",
+            "strDescriptionPT",
+            "strDescriptionNL",
+            "strDescriptionRU",
+            "strDescriptionJP",
+        )
+        return first_present(data, fields)
+
+    get_track_text = getattr(client, "get_track_text", None)
+    if callable(get_track_text):
+        try:
+            return get_track_text(
+                artist=artist,
+                title=title,
+                album=album,
+                language=lang_code,
+            )
+        except TypeError:
+            return get_track_text(
+                artist=artist,
+                title=title,
+                language=lang_code,
+            )
+
+    track = client.search_track(artist, title) if artist.strip() and title.strip() else None
+    if track:
+        lyrics = first_present(
+            track,
+            ("strTrackLyrics", "strLyrics", "strLyric", "strTrackLyric"),
+        )
+        if lyrics:
+            return clean(lyrics)
+        description = localized_description(track)
+        if description:
+            return clean(description)
+        pieces = []
+        if track.get("strMood"):
+            pieces.append(f"mood: {track['strMood']}")
+        if track.get("strTheme"):
+            pieces.append(f"theme: {track['strTheme']}")
+        if track.get("strGenre"):
+            pieces.append(f"genre: {track['strGenre']}")
+        if track.get("strAlbum"):
+            pieces.append(f"album: {track['strAlbum']}")
+        if pieces:
+            return clean("TheAudioDB associa il brano a " + ", ".join(pieces) + ".")
+
+    album_data = client.search_album(artist, album) if artist.strip() and album.strip() else None
+    if album_data:
+        description = localized_description(album_data)
+        if description:
+            return clean(description)
+
+    return client.get_music_fact(
+        artist=artist,
+        title=title,
+        album=album,
+        language=lang_code,
+    )
+
+
 def fetch_song_context(title: str, artist: str, lang_code: str) -> tuple[str, list[str]]:
     """Recupera testo (Musixmatch) e contesto TheAudioDB per la chat."""
     parts: list[str] = []
@@ -562,10 +653,11 @@ def fetch_song_context(title: str, artist: str, lang_code: str) -> tuple[str, li
     if artist and settings.audiodb_ready:
         try:
             adb_client = AudioDBClient()
-            audiodb_text = adb_client.get_track_text(
+            audiodb_text = fetch_audiodb_track_text(
+                adb_client,
                 artist=artist,
                 title=title,
-                language=lang_code,
+                lang_code=lang_code,
             )
             if audiodb_text:
                 parts.append(f"Testo/contesto brano (TheAudioDB):\n{audiodb_text}")
@@ -910,11 +1002,12 @@ def enrich_tracks_with_audiodb_facts(
             continue
         try:
             if title and not t.get("audio_db_text"):
-                text = client.get_track_text(
+                text = fetch_audiodb_track_text(
+                    client,
                     artist=artist,
                     title=title,
                     album=album,
-                    language=lang_code,
+                    lang_code=lang_code,
                 )
                 if text:
                     t["audio_db_text"] = text
@@ -999,11 +1092,12 @@ def build_studio(
                     image_cache[artist] = a.image_url
                     t["image"] = a.image_url
                 if not t.get("audio_db_text"):
-                    text = adb_client.get_track_text(
+                    text = fetch_audiodb_track_text(
+                        adb_client,
                         artist=artist,
                         title=title,
                         album=str(t.get("album", "")),
-                        language=lang_code,
+                        lang_code=lang_code,
                     )
                     if text:
                         t["audio_db_text"] = text
