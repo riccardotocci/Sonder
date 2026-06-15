@@ -15,6 +15,16 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+LLM_MODEL_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("Gemma", "google/gemma-4-31b-it:free"),
+    ("Nemotron 3 Ultra", "nvidia/nemotron-3-ultra-550b-a55b:free"),
+    ("Owl Alpha", "openrouter/owl-alpha"),
+    ("Nex N2 Pro", "nex-agi/nex-n2-pro:free"),
+    ("GPT OSS 120B", "openai/gpt-oss-120b:free"),
+)
+DEFAULT_LLM_MODEL = LLM_MODEL_OPTIONS[0][1]
+
+
 def _env(key: str, default: str = "") -> str:
     """Legge una variabile d'ambiente restituendo sempre una stringa pulita."""
     value = os.getenv(key, default)
@@ -43,7 +53,7 @@ class Settings:
         default_factory=lambda: _env("LLM_BASE_URL", "https://openrouter.ai/api/v1")
     )
     llm_model: str = field(
-        default_factory=lambda: _env("LLM_MODEL", "deepseek/deepseek-r1")
+        default_factory=lambda: _env("LLM_MODEL", DEFAULT_LLM_MODEL)
     )
 
     # --- ElevenLabs TTS ---

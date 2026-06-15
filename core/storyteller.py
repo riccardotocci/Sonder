@@ -123,11 +123,14 @@ Messaggi:
 
 Regole:
 - Se l'utente cita titolo/artista, usa q_track e q_artist.
-- Per temi o mood crea 2-4 query brevi, concrete, cercabili.
-- Metti parole da testo in q_lyrics; metti genere/lingua/periodo in q.
+- Per temi crea 4-8 query incentrate su parole/immagini del tema, NON su emozioni generiche.
+- Metti parole da testo in q_lyrics: goodbye, addio, adieu, adios, miss you, mi manchi, tu me manques, te extraño, senza di te, sin ti.
+- Usa q solo per genere/lingua/periodo. Non usare q per mood astratti.
 - Evita parole inutili: canzoni, brani, playlist, consigliami.
+- Evita etichette generiche: sad, emotional, melancholic, heartbreak, loss, broken heart, triste.
 - Non inventare titoli o artisti.
-- reason: massimo 6 parole.
+- reason: descrizione tematica profonda, 5-8 parole.
+- reason NON deve citare genere, mood, emozioni generiche, strumenti o lingua.
 
 Schema:
 {{
@@ -178,7 +181,6 @@ Rispondi SOLO JSON valido:
       "artist": "...",
             "musixmatch_speech": "...",
             "audiodb_speech": "...",
-            "speech": "<musixmatch_speech + spazio + audiodb_speech>",
             "mood": "...",
             "origin": "...",
       "lat": <latitudine decimale dell'origine>,
@@ -202,6 +204,145 @@ filo conduttore narrativo ed emotivo del brano "{title}" di {artist}.
 
 Rispondi SOLO con un array JSON valido, senza testo prima o dopo, nel formato:
 [{{"title": "...", "artist": "...", "reason": "<max 12 parole in {language}>"}}]"""
+
+
+THEME_QUERY_BANK: tuple[tuple[set[str], list[dict[str, str]]], ...] = (
+    (
+        {
+            "heartbreak",
+            "broken heart",
+            "loss",
+            "grief",
+            "perdita",
+            "cuore spezzato",
+            "chagrin",
+            "rupture",
+            "desamor",
+            "corazon roto",
+            "corazón roto",
+            "herzschmerz",
+            "abschied",
+            "saudade",
+        },
+        [
+            {"lang": "EN", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "goodbye", "reason": "congedo detto prima del vuoto"},
+            {"lang": "EN", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "miss you", "reason": "assenza che abita il presente"},
+            {"lang": "EN", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "without you", "reason": "identità ridotta dal distacco"},
+            {"lang": "IT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "addio", "reason": "soglia chiusa senza ritorno"},
+            {"lang": "IT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "mi manchi", "reason": "nome invocato nello spazio vuoto"},
+            {"lang": "IT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "senza di te", "reason": "vita ridefinita dalla sottrazione"},
+            {"lang": "FR", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "adieu", "reason": "separazione trasformata in destino"},
+            {"lang": "FR", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "tu me manques", "reason": "il tu resta come mancanza"},
+            {"lang": "FR", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "sans toi", "reason": "mondo privato del suo centro"},
+            {"lang": "ES", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "adios", "reason": "porta chiusa sul passato condiviso"},
+            {"lang": "ES", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "te extraño", "reason": "distanza che continua a chiamare"},
+            {"lang": "ES", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "sin ti", "reason": "io incompleto senza il tu"},
+            {"lang": "DE", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "auf wiedersehen", "reason": "promessa fragile dentro il congedo"},
+            {"lang": "DE", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "ich vermisse dich", "reason": "assenza misurata nel quotidiano"},
+            {"lang": "DE", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "ohne dich", "reason": "presenza cancellata dalla frase"},
+            {"lang": "PT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "adeus", "reason": "partenza senza data di ritorno"},
+            {"lang": "PT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "saudade", "reason": "memoria che sostituisce la presenza"},
+            {"lang": "PT", "q": "", "q_track": "", "q_artist": "", "q_lyrics": "sem você", "reason": "quotidiano svuotato dal pronome"},
+        ],
+    ),
+)
+
+GENERIC_THEME_TERMS = {
+    "sad",
+    "emotional",
+    "melancholic",
+    "melancholy",
+    "heartbreak",
+    "broken heart",
+    "loss",
+    "pain",
+    "triste",
+    "emotivo",
+    "malinconico",
+    "cuore spezzato",
+    "perdita",
+}
+
+CONCRETE_THEME_TERMS = {
+    "goodbye",
+    "miss you",
+    "without you",
+    "gone",
+    "come back",
+    "empty room",
+    "addio",
+    "mi manchi",
+    "senza di te",
+    "non torni",
+    "adieu",
+    "tu me manques",
+    "sans toi",
+    "adios",
+    "adiós",
+    "te extraño",
+    "sin ti",
+    "auf wiedersehen",
+    "ich vermisse dich",
+    "ohne dich",
+    "adeus",
+    "saudade",
+    "sem você",
+}
+
+THEME_QUERY_LANGUAGE_ORDER = ("EN", "IT", "FR", "ES", "DE", "PT")
+
+
+def _theme_queries_for_text(text: str) -> list[dict[str, str]]:
+    normalized = text.casefold()
+    queries: list[dict[str, str]] = []
+    for triggers, bank in THEME_QUERY_BANK:
+        if any(trigger in normalized for trigger in triggers):
+            queries.extend(dict(item) for item in bank)
+    by_language: dict[str, list[dict[str, str]]] = {lang: [] for lang in THEME_QUERY_LANGUAGE_ORDER}
+    for query in queries:
+        language = str(query.get("lang", "")).upper()
+        by_language.setdefault(language, []).append(query)
+
+    spread: list[dict[str, str]] = []
+    index = 0
+    while len(spread) < 10:
+        added = False
+        for language in THEME_QUERY_LANGUAGE_ORDER:
+            bucket = by_language.get(language, [])
+            if index < len(bucket):
+                spread.append(bucket[index])
+                added = True
+                if len(spread) >= 10:
+                    break
+        if not added:
+            break
+        index += 1
+    return spread
+
+
+def _query_text(query: dict[str, str]) -> str:
+    return " ".join(str(query.get(key, "")) for key in ("q", "q_lyrics")).casefold()
+
+
+def _is_generic_theme_query(query: dict[str, str]) -> bool:
+    text = _query_text(query)
+    if not text:
+        return False
+    if any(term in text for term in CONCRETE_THEME_TERMS):
+        return False
+    return any(term in text for term in GENERIC_THEME_TERMS)
+
+
+def _dedupe_queries(queries: list[dict[str, str]]) -> list[dict[str, str]]:
+    seen: set[tuple[str, str, str, str]] = set()
+    result: list[dict[str, str]] = []
+    for query in queries:
+        key = tuple(str(query.get(field, "")).casefold() for field in ("q", "q_track", "q_artist", "q_lyrics"))
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(query)
+    return result
 
 
 class Storyteller:
@@ -393,11 +534,18 @@ class Storyteller:
                     queries.append(query)
         if as_bool(data.get("needs_search"), True) and not queries and last_user:
             queries.append({"q": last_user, "q_track": "", "q_artist": "", "q_lyrics": "", "reason": ""})
+        has_explicit_track = any(query.get("q_track") or query.get("q_artist") for query in queries)
+        theme_queries = _theme_queries_for_text(last_user)
+        if theme_queries and not has_explicit_track:
+            concrete_queries = [query for query in queries if not _is_generic_theme_query(query)]
+            queries = _dedupe_queries(theme_queries + concrete_queries)
+        else:
+            queries = _dedupe_queries(queries)
         return {
             "music_related": as_bool(data.get("music_related"), True),
             "needs_search": as_bool(data.get("needs_search"), True),
             "limit": limit,
-            "queries": queries[:4],
+            "queries": queries[:10],
         }
 
     def compose_musixmatch_response(

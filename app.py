@@ -21,7 +21,7 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
-from core.config import settings
+from core.config import LLM_MODEL_OPTIONS, settings
 from core.musixmatch_client import MusixmatchClient, MusixmatchError
 from core.audiodb_client import AudioDBClient, AudioDBError
 from core.lastfm_client import LastFMClient, LastFMError
@@ -138,6 +138,8 @@ LLM_RETRY_ERROR_HINTS = (
     "429",
     "quota",
 )
+
+LLM_MODEL_LABELS = {value: label for label, value in LLM_MODEL_OPTIONS}
 
 # Palette neon "studio tecnologico", ciclata per indice su pill e card.
 PALETTE = ["#ff2d78", "#f97316", "#22d3ee", "#facc15", "#c2410c", "#34d399"]
@@ -511,6 +513,47 @@ def add_llm_log(step: str, detail: str = "") -> None:
 
 def current_llm_log() -> list[dict[str, str]]:
     return list(st.session_state.get("llm_log") or [])
+
+
+def llm_model_values() -> list[str]:
+    values = [value for _, value in LLM_MODEL_OPTIONS]
+    if settings.llm_model and settings.llm_model not in values:
+        values.insert(0, settings.llm_model)
+    return values
+
+
+def selected_llm_model() -> str:
+    values = llm_model_values()
+    selected = st.session_state.get("llm_model") or settings.llm_model
+    if selected not in values:
+        selected = values[0] if values else settings.llm_model
+    st.session_state["llm_model"] = selected
+    return selected
+
+
+def storyteller_for_session() -> Storyteller:
+    return Storyteller(model=selected_llm_model())
+
+
+def render_llm_model_selector() -> None:
+    values = llm_model_values()
+    if not values:
+        return
+    selected = selected_llm_model()
+    label_map = dict(LLM_MODEL_LABELS)
+    if settings.llm_model and settings.llm_model not in label_map:
+        label_map[settings.llm_model] = "Configured in .env"
+    index = values.index(selected) if selected in values else 0
+    with st.sidebar.expander("🧠 LLM model", expanded=False):
+        chosen = st.selectbox(
+            "Model",
+            values,
+            index=index,
+            format_func=lambda value: label_map.get(value, value),
+            key="llm_model_selectbox",
+        )
+        st.session_state["llm_model"] = chosen
+        st.caption(f"Using `{chosen}` for the next LLM calls.")
 
 
 def render_llm_log(entries: list[dict[str, str]] | None = None) -> None:
@@ -1194,7 +1237,7 @@ def build_studio(
             f"Generating narrated speeches, moods and artist origins for {len(enriched)} tracks.",
         )
         try:
-            brief = Storyteller().studio_brief(
+            brief = storyteller_for_session().studio_brief(
                 title=prompt, tracks=enriched, language=lang_name
             )
             add_llm_log(
@@ -1603,7 +1646,15 @@ STUDIO_HTML = """
     if (t.origin) bits.push('📍 ' + t.origin);
     if (t.mood) bits.push(t.mood);
     cMeta.textContent = bits.filter(Boolean).join('  ·  ');
-    cSpeech.textContent = t.speech || (t.reason || 'No speech available for this track.');
+        const musix = (t.musixmatch_speech || '').trim();
+        const adb = (t.audiodb_speech || '').trim();
+        if (musix || adb) {
+            cSpeech.innerHTML =
+                (musix ? '<div><b>Musixmatch</b><br>' + esc(musix) + '</div>' : '') +
+                (adb ? '<div style="margin-top:12px;"><b>TheAudioDB</b><br>' + esc(adb) + '</div>' : '');
+        } else {
+            cSpeech.textContent = t.speech || (t.reason || 'No speech available for this track.');
+        }
     showLyrics(i);
     prepareTrackPlayer(i);
   }
@@ -1752,16 +1803,6 @@ STUDIO_HTML = """
         }
       }
     } catch (e) {}
-            const musix = (t.musixmatch_speech || '').trim();
-            const adb = (t.audiodb_speech || '').trim();
-            if (musix || adb) {
-                cSpeech.innerHTML =
-                    (musix ? '<div><b>Musixmatch</b><br>' + esc(musix) + '</div>' : '') +
-                    (adb ? '<div style="margin-top:12px;"><b>TheAudioDB</b><br>' + esc(adb) + '</div>' : '');
-            } else {
-                cSpeech.textContent = t.speech || (t.reason || 'No speech available for this track.');
-            }
-        const text = (t.speech || [t.musixmatch_speech, t.audiodb_speech].filter(Boolean).join(' ') || '').trim();
     return '';
   }
 
@@ -1785,7 +1826,7 @@ STUDIO_HTML = """
             t.audio_url = 'data:audio/mpeg;base64,' + t.audio_b64;
             return t.audio_url;
         }
-        const text = (t.speech || '').trim();
+        const text = (t.speech || [t.musixmatch_speech, t.audiodb_speech].filter(Boolean).join(' ') || '').trim();
         if (!text || !TTS_ENDPOINT || !TTS_TOKEN) return '';
 
         const response = await fetch(TTS_ENDPOINT, {
@@ -2147,7 +2188,7 @@ def handle_user_input(prompt: str, lang_name: str, lang_code: str) -> None:
         st.session_state["studio"] = empty_studio(prompt)
         return
 
-    teller = Storyteller()
+    teller = storyteller_for_session()
 
     with st.spinner("Searching Musixmatch..."):
         try:
@@ -2338,6 +2379,7 @@ def main() -> None:
 
     # Sidebar
     render_status_sidebar()
+    render_llm_model_selector()
     render_spotify_login(st.sidebar)
     st.sidebar.markdown("---")
 
@@ -2357,7 +2399,7 @@ def main() -> None:
             if st.button("Remove context", use_container_width=True):
                 st.session_state["context"] = ""
 
-    st.sidebar.caption(f"LLM model: `{settings.llm_model}`")
+    st.sidebar.caption(f"LLM model: `{selected_llm_model()}`")
 
     # Stato chat
     if "messages" not in st.session_state:
