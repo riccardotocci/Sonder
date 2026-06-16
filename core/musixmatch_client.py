@@ -277,11 +277,13 @@ class MusixmatchClient:
     def _parse_translation(body: dict[str, Any], language: str) -> Lyrics:
         """Estrae il testo tradotto da una risposta ``track.lyrics.translation.get``.
 
-        Il payload puo' presentarsi in due forme a seconda del piano/endpoint:
+        Il payload puo' presentarsi in piu' forme a seconda del piano/endpoint:
           1. ``translation_list`` con item ``{"translation": {"snippet", "description"}}``
              dove ``description`` contiene la riga tradotta.
-          2. ``lyrics`` con ``lyrics_body`` gia' tradotto.
-        Si gestiscono entrambe in modo difensivo.
+          2. ``lyrics.lyrics_translated.lyrics_body``: il testo gia' tradotto riga-per-riga
+             (forma canonica restituita dall'endpoint, vedi ``selected_language``).
+          3. ``lyrics.lyrics_body`` quando l'originale e' GIA' nella lingua richiesta.
+        Si gestiscono tutte in modo difensivo.
         """
         translation_list = body.get("translation_list")
         if isinstance(translation_list, list) and translation_list:
@@ -300,11 +302,26 @@ class MusixmatchClient:
             return Lyrics(body="\n".join(lines), language=language)
 
         lyrics = body.get("lyrics") or {}
-        if isinstance(lyrics, dict) and lyrics.get("lyrics_body"):
-            return Lyrics(
-                body=(lyrics.get("lyrics_body") or "").strip(),
-                language=lyrics.get("lyrics_language", language),
-                copyright=(lyrics.get("lyrics_copyright") or "").strip(),
-                is_restricted=bool(lyrics.get("restricted", 0)),
-            )
+        if isinstance(lyrics, dict):
+            # 2) Forma canonica: la traduzione e' annidata in ``lyrics_translated``.
+            translated = lyrics.get("lyrics_translated")
+            if isinstance(translated, dict) and (translated.get("lyrics_body") or "").strip():
+                return Lyrics(
+                    body=(translated.get("lyrics_body") or "").strip(),
+                    language=translated.get("selected_language", language),
+                    copyright=(lyrics.get("lyrics_copyright") or "").strip(),
+                    is_restricted=bool(lyrics.get("restricted", 0)),
+                )
+            # 3) Nessuna traduzione: usa l'originale SOLO se gia' nella lingua richiesta
+            #    (es. traduzione IT di un brano gia' in italiano), altrimenti vuoto cosi'
+            #    da NON spacciare il testo originale per una traduzione.
+            original_lang = str(lyrics.get("lyrics_language") or "").strip().lower()
+            target_lang = str(language or "").strip().lower()
+            if (lyrics.get("lyrics_body") or "").strip() and original_lang and original_lang == target_lang:
+                return Lyrics(
+                    body=(lyrics.get("lyrics_body") or "").strip(),
+                    language=original_lang or language,
+                    copyright=(lyrics.get("lyrics_copyright") or "").strip(),
+                    is_restricted=bool(lyrics.get("restricted", 0)),
+                )
         return Lyrics(body="", language=language)

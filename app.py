@@ -968,51 +968,58 @@ def _songstats_artist_stats(name: str) -> dict[str, Any] | None:
     }
 
 
-def apply_popularity_floor(
-    tracks: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], list[str]]:
-    """Esclude i brani poco noti sotto la soglia Songstats (task 4).
+def select_known_candidates(
+    candidates: list[tuple[Any, str]],
+    limit: int,
+) -> tuple[list[tuple[Any, str, dict[str, Any] | None]], list[str]]:
+    """Seleziona fino a ``limit`` tracce NOTE dai candidati Musixmatch (task 4).
 
-    - Le tracce per cui Songstats non restituisce stream (o non e' configurato) vengono
-      MANTENUTE (beneficio del dubbio), per non svuotare i risultati.
-    - I lookup avvengono in parallelo. Le statistiche trovate vengono allegate alla
-      traccia (chiave ``songstats``) per riuso nei grafici, evitando doppie chiamate.
+    Per ogni candidato risolve le statistiche Songstats (per ISRC): scarta i brani
+    poco noti (sotto la soglia di stream) e prosegue con i candidati successivi finché
+    non raggiunge ``limit`` brani — così un brano poco noto viene SOSTITUITO da un
+    altro invece di ridurre il totale. Le tracce ignote a Songstats (o se Songstats
+    non e' configurato) sono mantenute (beneficio del dubbio). Le statistiche trovate
+    vengono restituite insieme alla traccia per riuso nei grafici (niente doppie chiamate).
     """
     notes: list[str] = []
-    if not settings.songstats_ready or not tracks:
-        return tracks, notes
+    if not candidates:
+        return [], notes
+    if not settings.songstats_ready:
+        return [(match, reason, None) for match, reason in candidates[:limit]], notes
 
     # Task 3: cattura il token utente (PKCE) nel thread principale e passalo ai worker,
     # così la risoluzione ISRC funziona col solo CLIENT_ID pubblico anche qui.
     user_token = spotify_token()
 
-    def lookup(t: dict[str, Any]) -> dict[str, Any] | None:
+    def lookup(item: tuple[Any, str]) -> dict[str, Any] | None:
+        match, _reason = item
         return _songstats_track_stats(
-            t.get("title", ""), t.get("artist", ""), user_token
+            getattr(match, "track_name", ""), getattr(match, "artist_name", ""), user_token
         )
 
-    with ThreadPoolExecutor(max_workers=min(8, len(tracks))) as executor:
-        stats_list = list(executor.map(lookup, tracks))
+    with ThreadPoolExecutor(max_workers=min(8, len(candidates))) as executor:
+        stats_list = list(executor.map(lookup, candidates))
 
-    kept: list[dict[str, Any]] = []
+    selected: list[tuple[Any, str, dict[str, Any] | None]] = []
     dropped = 0
-    for track, stats in zip(tracks, stats_list):
+    for (match, reason), stats in zip(candidates, stats_list):
+        if len(selected) >= limit:
+            break
         if stats:
-            track["songstats"] = stats
             streams = int(stats.get("total_streams", 0) or 0)
             if streams and streams < SONGSTATS_MIN_STREAMS:
                 dropped += 1
                 continue
-        kept.append(track)
+        selected.append((match, reason, stats))
     if dropped:
         notes.append(
-            f"Songstats: {dropped} brano/i poco noto/i nascosto/i "
+            f"Songstats: {dropped} brano/i poco noto/i sostituito/i "
             f"(sotto {SONGSTATS_MIN_STREAMS:,} stream)."
         )
-    # Sicurezza: non restituire mai una lista vuota se c'erano risultati.
-    if not kept and tracks:
-        return tracks, notes
-    return kept, notes
+    # Sicurezza: non restituire mai una lista vuota se c'erano candidati.
+    if not selected and candidates:
+        return [(match, reason, None) for match, reason in candidates[:limit]], notes
+    return selected, notes
 
 
 def search_musixmatch_from_plan(
@@ -1037,14 +1044,16 @@ def search_musixmatch_from_plan(
     if not isinstance(queries, list):
         queries = []
 
-    # 1) UNA traccia per query (diversità tematica): il piano contiene molte query
-    #    articolate; prendiamo UN SOLO match nuovo da ciascuna invece di lasciare che
-    #    la prima query riempia tutti gli slot. Così risultati piu' vari e pertinenti.
+    # 1) UNA traccia per query (diversità tematica): raccogliamo UN SOLO match nuovo
+    #    da OGNI query — anche oltre `limit` — così abbiamo un margine di riserva per
+    #    sostituire i brani poco noti (task 4) e raggiungere comunque `limit` brani noti.
     #    Scarichiamo testi/richsync dopo, in parallelo, preservando l'ordine.
-    collected: list[tuple[Any, str]] = []  # (Track, reason)
+    candidates: list[tuple[Any, str]] = []  # (Track, reason)
     for query in queries:
-        if len(collected) >= limit or not isinstance(query, dict):
+        if not isinstance(query, dict):
             continue
+        if len(candidates) >= limit * 2:  # margine sufficiente per il backfill
+            break
         q = str(query.get("q", "")).strip()
         q_track = str(query.get("q_track", "")).strip()
         q_artist = str(query.get("q_artist", "")).strip()
@@ -1069,27 +1078,33 @@ def search_musixmatch_from_plan(
             if match.track_id in seen:
                 continue
             seen.add(match.track_id)
-            collected.append((match, reason))
+            candidates.append((match, reason))
             break
 
-    # 2) Scarica testo/richsync/traduzione in PARALLELO (task 9), preservando l'ordine.
+    # 2) Soglia di notorietà Songstats (task 4): scegli fino a `limit` brani NOTI,
+    #    sostituendo i brani poco noti con i candidati successivi (niente lista ridotta).
+    selected, floor_notes = select_known_candidates(candidates, limit)
+    notes.extend(floor_notes)
+
+    # 3) Scarica testo/richsync/traduzione in PARALLELO (task 9), preservando l'ordine.
     #    Un client per worker: evita di condividere la stessa requests.Session tra thread.
-    def build_payload(item: tuple[Any, str]) -> dict[str, Any]:
-        match, reason = item
-        return musixmatch_track_payload(
+    #    Riallega le statistiche Songstats già risolte (niente doppie chiamate).
+    def build_payload(item: tuple[Any, str, dict[str, Any] | None]) -> dict[str, Any]:
+        match, reason, stats = item
+        payload = musixmatch_track_payload(
             MusixmatchClient(),
             match,
             reason=reason,
             translation_lang=translation_lang,
         )
+        if stats:
+            payload["songstats"] = stats
+        return payload
 
-    if collected:
-        with ThreadPoolExecutor(max_workers=min(8, len(collected))) as executor:
-            results = list(executor.map(build_payload, collected))
+    if selected:
+        with ThreadPoolExecutor(max_workers=min(8, len(selected))) as executor:
+            results = list(executor.map(build_payload, selected))
 
-    # 3) Soglia di notorieta' Songstats (task 4): esclude i brani poco noti.
-    results, floor_notes = apply_popularity_floor(results)
-    notes.extend(floor_notes)
     return results, notes
 
 
@@ -2004,7 +2019,7 @@ STUDIO_HTML = """
     const t = TRACKS[i];
         if (t.uri) {
             showSpotifyEmbed(t.uri);
-            setPMsg(embedReady ? 'Spotify player ready ✓' : 'Loading Spotify player…');
+            setPMsg(embedReady ? '' : 'Loading Spotify player…');
             return;
         }
         if (!TOKEN) {
@@ -2015,7 +2030,7 @@ STUDIO_HTML = """
         if (current !== i) return;
         if (uri) {
             showSpotifyEmbed(uri);
-            setPMsg(embedReady ? 'Spotify player ready ✓' : 'Loading Spotify player…');
+            setPMsg(embedReady ? '' : 'Loading Spotify player…');
         } else {
             setPMsg('Track not found on Spotify.');
         }
@@ -2489,7 +2504,7 @@ STUDIO_HTML = """
         }, (controller) => {
             embedController = controller;
             embedReady = true;
-            setPMsg('Spotify player ready ✓');
+            setPMsg('');
             controller.addListener('playback_update', onState);
             if (pendingUri) {
                 try { controller.loadUri(pendingUri); } catch (e) {}

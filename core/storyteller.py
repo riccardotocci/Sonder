@@ -187,8 +187,8 @@ Brani (nell'ordine):
 {tracks}
 
 Per ogni brano scrivi DUE parti separate in {language}:
-- musixmatch_speech: 25-40 parole basate solo sul testo/richsync e sul motivo ricerca.
-- audiodb_speech: 25-40 parole basate su contesto esterno ordinato così: prima notizie specifiche/curiosità sul brano, poi notizie sull'album, poi descrizione dell'artista.
+- musixmatch_speech: 40-50 parole basate solo sul testo/richsync e sul motivo ricerca.
+- audiodb_speech: 40-50 parole basate su contesto esterno ordinato così: prima notizie specifiche/curiosità sul brano, poi notizie sull'album, poi descrizione dell'artista.
 Non mescolare le fonti. Non inventare.
 Non scrivere mai i nomi delle fonti dentro i testi generati.
 Per audiodb_speech usa il primo livello disponibile nell'ordine indicato; non partire dall'artista se esistono dettagli sul brano o sull'album.
@@ -209,7 +209,7 @@ Rispondi SOLO JSON valido:
       "lng": <longitudine decimale dell'origine>
     }}
   ],
-  "summary": "<2-3 frasi in {language} che legano i brani al tema>",
+  "summary": "<4-5 frasi in {language} che legano i brani al tema>",
   "moods": ["..."]
 }}
 L'array "narrations" deve avere ESATTAMENTE {n} elementi, nello stesso ordine dei brani."""
@@ -682,6 +682,35 @@ def _dedupe_queries(queries: list[dict[str, str]]) -> list[dict[str, str]]:
     return result
 
 
+def _interleave_queries_by_language(queries: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Mescola l'ordine delle query così le lingue si ALTERNANO in modo casuale,
+    invece di restare raggruppate (evita 10 query francesi seguite da 10 spagnole).
+
+    Raggruppa per lingua, mischia ogni gruppo, poi estrae una query alla volta
+    scegliendo la lingua con probabilità proporzionale alle query ancora rimaste:
+    ne risulta un'alternanza naturale (a volte due della stessa lingua di fila,
+    es. una FR, una ES, due FR, una ES) invece di blocchi monolingua.
+    """
+    if len(queries) <= 2:
+        return list(queries)
+    groups: dict[str, list[dict[str, str]]] = {}
+    for query in queries:
+        lang = str(query.get("lang", "")).upper() or "?"
+        groups.setdefault(lang, []).append(query)
+    if len(groups) <= 1:
+        return list(queries)
+    rng = random.SystemRandom()
+    for bucket in groups.values():
+        rng.shuffle(bucket)
+    result: list[dict[str, str]] = []
+    while any(groups.values()):
+        langs = [lang for lang, bucket in groups.items() if bucket]
+        weights = [len(groups[lang]) for lang in langs]
+        chosen = rng.choices(langs, weights=weights, k=1)[0]
+        result.append(groups[chosen].pop())
+    return result
+
+
 class Storyteller:
     """Genera analisi emotive e curatela playlist tramite un LLM 'Thinking'."""
 
@@ -988,7 +1017,7 @@ class Storyteller:
             "needs_search": needs_search,
             "limit": limit,
             "narration_lang": narration_lang,
-            "queries": queries[:20],
+            "queries": _interleave_queries_by_language(queries)[:20],
         }
 
     def _fallback_musixmatch_plan(
@@ -1013,7 +1042,7 @@ class Storyteller:
             "needs_search": bool(queries),
             "limit": 10,
             "narration_lang": "",
-            "queries": _dedupe_queries(queries)[:20],
+            "queries": _interleave_queries_by_language(_dedupe_queries(queries))[:20],
             "_router_fallback": reason or "Used local Musixmatch query fallback.",
         }
 
