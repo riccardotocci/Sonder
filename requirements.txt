@@ -16,3 +16,6 @@ python-dotenv>=1.0.0
 
 # Rilevamento lingua del messaggio utente (lingua di narrazione/traduzione)
 langdetect>=1.0.9
+
+# SDK ufficiale ElevenLabs (Text-to-Speech + timestamp per i sottotitoli karaoke)
+elevenlabs>=2.0.0

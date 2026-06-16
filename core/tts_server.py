@@ -1,6 +1,7 @@
 """Local on-demand TTS endpoint for the Streamlit studio component."""
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
@@ -35,7 +36,7 @@ class _TTSServerState:
     token: str = field(default_factory=lambda: secrets.token_urlsafe(32))
     server: ThreadingHTTPServer | None = None
     thread: threading.Thread | None = None
-    cache: dict[str, bytes] = field(default_factory=dict)
+    cache: dict[str, dict] = field(default_factory=dict)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -130,30 +131,35 @@ class _TTSRequestHandler(BaseHTTPRequestHandler):
         logger.warning("TTS accepted: text_chars=%s cache_key=%s", len(text), cache_key[:12])
 
         with _STATE.lock:
-            audio = _STATE.cache.get(cache_key)
-        cache_hit = audio is not None
+            cached = _STATE.cache.get(cache_key)
+        cache_hit = cached is not None
 
-        if audio is None:
+        if cached is None:
             try:
-                logger.warning("TTS cache miss: calling ElevenLabs")
-                audio = ElevenLabsClient().text_to_speech(text)
+                logger.warning("TTS cache miss: calling ElevenLabs (with timestamps)")
+                audio, marks = ElevenLabsClient().text_to_speech_with_marks(text)
             except ElevenLabsError as exc:
                 logger.warning("TTS ElevenLabs error: %s", exc)
                 _json_response(self, 502, {"error": str(exc)})
                 return
+            cached = {
+                "audio_b64": base64.b64encode(audio).decode("ascii"),
+                "marks": marks,
+            }
             with _STATE.lock:
-                _STATE.cache[cache_key] = audio
+                _STATE.cache[cache_key] = cached
         else:
             logger.warning("TTS cache hit: serving cached audio")
 
+        body = json.dumps(cached).encode("utf-8")
         self.send_response(200)
         _set_cors_headers(self)
-        self.send_header("Content-Type", "audio/mpeg")
-        self.send_header("Content-Length", str(len(audio)))
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "private, max-age=86400")
         self.send_header("X-Sonder-TTS-Cache", "hit" if cache_hit else "miss")
         self.end_headers()
-        self.wfile.write(audio)
+        self.wfile.write(body)
 
 
 def ensure_tts_server() -> TTSServerInfo:

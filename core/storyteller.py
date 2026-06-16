@@ -187,8 +187,8 @@ Brani (nell'ordine):
 {tracks}
 
 Per ogni brano scrivi DUE parti separate in {language}:
-- musixmatch_speech: 40-50 parole basate solo sul testo/richsync e sul motivo ricerca.
-- audiodb_speech: 40-50 parole basate su contesto esterno ordinato così: prima notizie specifiche/curiosità sul brano, poi notizie sull'album, poi descrizione dell'artista.
+- musixmatch_speech: 70-80 parole basate solo sul testo/richsync e sul motivo ricerca.
+- audiodb_speech: 70-80 parole basate su contesto esterno ordinato così: prima notizie specifiche/curiosità sul brano, poi notizie sull'album, poi descrizione dell'artista.
 Non mescolare le fonti. Non inventare.
 Non scrivere mai i nomi delle fonti dentro i testi generati.
 Per audiodb_speech usa il primo livello disponibile nell'ordine indicato; non partire dall'artista se esistono dettagli sul brano o sull'album.
@@ -209,7 +209,7 @@ Rispondi SOLO JSON valido:
       "lng": <longitudine decimale dell'origine>
     }}
   ],
-  "summary": "<4-5 frasi in {language} che legano i brani al tema>",
+  "summary": "<6-7 frasi in {language} che legano i brani al tema>",
   "moods": ["..."]
 }}
 L'array "narrations" deve avere ESATTAMENTE {n} elementi, nello stesso ordine dei brani."""

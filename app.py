@@ -1412,42 +1412,49 @@ def _track_narration_text(track: dict) -> str:
 
 
 @st.cache_data(show_spinner=False)
-def _elevenlabs_audio_b64(
+def _elevenlabs_narration(
     text: str,
     voice_id: str,
     model_id: str,
     output_format: str,
-) -> str:
-    """Genera (con cache) l'MP3 ElevenLabs per *text* e lo ritorna base64.
+) -> dict:
+    """Genera (con cache) MP3 + marche temporali di parola per *text*.
+
+    Una sola chiamata ElevenLabs (``convert_with_timestamps``) produce SIA l'audio
+    SIA l'allineamento per-carattere, così i sottotitoli karaoke restano sincronizzati
+    con la stessa resa audio. Ritorna ``{"audio_b64": str, "marks": list}`` dove ogni
+    marca è ``{"w","s","e","c0"}`` (parola, inizio/fine in secondi, offset carattere).
 
     Task 4: l'audio viene prodotto lato server (Python) UN brano alla volta, quando
     l'utente preme Play, così funziona anche in hosting (sonder.streamlit.app) dove
     il browser non può raggiungere il server TTS locale (127.0.0.1). La cache per
     (testo, voce, modello, formato) evita di rigenerare lo stesso clip tra i rerun.
     """
-    audio = ElevenLabsClient().text_to_speech(
+    audio, marks = ElevenLabsClient().text_to_speech_with_marks(
         text,
         voice_id=voice_id,
         model_id=model_id,
         output_format=output_format,
     )
-    return base64.b64encode(audio).decode("ascii")
+    return {"audio_b64": base64.b64encode(audio).decode("ascii"), "marks": marks}
 
 
 def _ensure_track_elevenlabs_audio(track: dict) -> bool:
-    """Popola ``audio_b64`` per UN brano quando viene premuto Play. True se pronto."""
+    """Popola ``audio_b64`` e ``speech_marks`` per UN brano al Play. True se pronto."""
     if track.get("audio_b64"):
         return True
     text = _track_narration_text(track)
     if not text:
         return False
-    track["audio_b64"] = _elevenlabs_audio_b64(
+    data = _elevenlabs_narration(
         text,
         _persisted_voice_id(),
         ElevenLabsClient.DEFAULT_MODEL,
         ElevenLabsClient.DEFAULT_OUTPUT_FORMAT,
     )
-    return True
+    track["audio_b64"] = data.get("audio_b64", "")
+    track["speech_marks"] = data.get("marks", [])
+    return bool(track["audio_b64"])
 
 
 def _query_param_value(name: str, default: str = "") -> str:
@@ -1735,6 +1742,7 @@ def build_studio(
         t.setdefault("lng", None)
         t.setdefault("image", "")
         t.setdefault("audio_b64", "")
+        t.setdefault("speech_marks", [])
         t.setdefault("lyrics", "")
         t.setdefault("translated_lyrics", "")
         t.setdefault("translation_lang", translation_lang)
@@ -1747,7 +1755,7 @@ def build_studio(
 
     # 4) Task 4: l'audio di narrazione ElevenLabs NON viene più pre-generato qui.
     #    Viene prodotto UN brano alla volta quando l'utente preme Play:
-    #      - in locale, on-demand via endpoint TTS loopback (vedi speak() / fetchTtsB64);
+    #      - in locale, on-demand via endpoint TTS loopback (vedi speak() / fetchTts);
     #      - in hosting (sonder.streamlit.app), on-demand lato server tramite la
     #        richiesta embedded dell'iframe (vedi handle_embedded_tts_request()).
     #    Il Web Speech API del browser resta solo come ultima spiaggia.
@@ -1903,6 +1911,9 @@ STUDIO_HTML = """
   .lyr-original { color: #8f8aa8; font-size: .72rem; line-height: 1.35; margin-top: 2px; opacity: .82; }
   .lyr-line.active .lyr-original { color: #b6b0ca; }
   .lyr-word.active { color: #facc15; text-shadow: 0 0 10px rgba(250,204,21,.35); }
+  /* Karaoke della narrazione: ogni parola si illumina quando ElevenLabs la pronuncia. */
+  .sp-word { transition: color .18s ease, text-shadow .18s ease; }
+  .sp-word.active { color: #facc15; font-weight: 600; text-shadow: 0 0 12px rgba(250,204,21,.45); }
 </style>
 </head>
 <body>
@@ -1967,6 +1978,8 @@ STUDIO_HTML = """
     let embedPaused = true;
     let lastPlaybackUpdateTs = Date.now();
   let currentAudio = null;
+  let speechRaf = null;
+  let speechActiveIdx = -1;
   let shuffleOn = false;
   let autoSeq = false;
   let awaitingEnd = false;
@@ -2077,7 +2090,10 @@ STUDIO_HTML = """
     cMeta.textContent = bits.filter(Boolean).join('  ·  ');
     const musix = (t.musixmatch_speech || '').trim();
     const adb = (t.audiodb_speech || '').trim();
-    if (musix || adb) {
+    clearSpeechKaraoke();
+    if (renderSpeechWords(t)) {
+      // narrazione con parole-span pronte per il karaoke (evidenziate al Play)
+    } else if (musix || adb) {
       cSpeech.innerHTML =
         (musix ? '<div>' + esc(musix) + '</div>' : '') +
         (adb ? '<div style="margin-top:12px;">' + esc(adb) + '</div>' : '');
@@ -2316,6 +2332,7 @@ STUDIO_HTML = """
 
   // ---- Audio: voce (ElevenLabs MP3 o Web Speech fallback) + Spotify ----
   function stopAudio() {
+    clearSpeechKaraoke();
     try { window.speechSynthesis.cancel(); } catch (e) {}
     if (currentAudio) {
       try { currentAudio.pause(); currentAudio.currentTime = 0; } catch (e) {}
@@ -2327,31 +2344,89 @@ STUDIO_HTML = """
         }
   }
 
-  function arrayBufferToB64(buffer) {
-    let binary = '';
-    const bytes = new Uint8Array(buffer);
-    const chunk = 0x8000;
-    for (let i = 0; i < bytes.length; i += chunk) {
-      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
-    }
-    return btoa(binary);
-  }
-
-  // Task 1: genera (lazy) l'audio di narrazione per UN brano chiamando l'endpoint
-  // TTS locale ElevenLabs. Il server mette in cache per hash del testo, quindi il
-  // riascolto non rigenera. Ritorna base64 oppure '' (fallback Web Speech).
-  async function fetchTtsB64(text) {
-    if (!TTS_ENDPOINT || !text) return '';
+  // Task 1/karaoke: genera (lazy) audio + marche temporali di narrazione per UN
+  // brano chiamando l'endpoint TTS locale ElevenLabs. Il server fa cache per hash
+  // del testo (riascolto = nessuna rigenerazione). Ritorna {audio_b64, marks} o null.
+  async function fetchTts(text) {
+    if (!TTS_ENDPOINT || !text) return null;
     try {
       const r = await fetch(TTS_ENDPOINT, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Sonder-TTS-Token': TTS_TOKEN },
         body: JSON.stringify({ text: text })
       });
-      if (!r.ok) return '';
-      const buf = await r.arrayBuffer();
-      return arrayBufferToB64(buf);
-    } catch (e) { return ''; }
+      if (!r.ok) return null;
+      const data = await r.json();
+      if (!data || !data.audio_b64) return null;
+      return { audio_b64: data.audio_b64, marks: Array.isArray(data.marks) ? data.marks : [] };
+    } catch (e) { return null; }
+  }
+
+  // ---- Karaoke della narrazione (sottotitoli sincronizzati con la voce ElevenLabs) ----
+  // Le marche {w,s,e,c0} arrivano dallo STESSO convert_with_timestamps che ha prodotto
+  // l'audio, quindi parola e voce sono perfettamente allineate. Spezziamo in due
+  // paragrafi (Musixmatch / TheAudioDB) usando l'offset carattere c0.
+  function renderSpeechWords(track) {
+    const marks = (track && track.speech_marks) || [];
+    if (!marks.length) return false;
+    const musixLen = ((track.musixmatch_speech || '')).length;
+    const hasSplit = musixLen > 0 && (track.audiodb_speech || '').trim().length > 0;
+    let seg1 = '', seg2 = '';
+    marks.forEach((m, idx) => {
+      const span = '<span class="sp-word" data-i="' + idx + '">' + esc(m.w) + '</span> ';
+      if (hasSplit && m.c0 >= musixLen) seg2 += span; else seg1 += span;
+    });
+    cSpeech.innerHTML =
+      (seg1 ? '<div>' + seg1 + '</div>' : '') +
+      (seg2 ? '<div style="margin-top:12px;">' + seg2 + '</div>' : '');
+    return true;
+  }
+
+  function clearSpeechKaraoke() {
+    if (speechRaf) { cancelAnimationFrame(speechRaf); speechRaf = null; }
+    speechActiveIdx = -1;
+    cSpeech.querySelectorAll('.sp-word.active').forEach(el => el.classList.remove('active'));
+  }
+
+  function startSpeechKaraoke(audioEl, track) {
+    const marks = (track && track.speech_marks) || [];
+    if (!marks.length) return;
+    const spans = [];
+    cSpeech.querySelectorAll('.sp-word').forEach(el => { spans[parseInt(el.dataset.i)] = el; });
+    const centerCol = contentEl.parentElement;
+    speechActiveIdx = -1;
+    // Ultima parola il cui inizio <= t (ricerca binaria sui tempi crescenti).
+    function activeFor(t) {
+      let lo = 0, hi = marks.length - 1, res = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (marks[mid].s <= t) { res = mid; lo = mid + 1; } else { hi = mid - 1; }
+      }
+      return res;
+    }
+    function tick() {
+      if (!currentAudio || currentAudio !== audioEl) { speechRaf = null; return; }
+      const idx = activeFor((audioEl.currentTime || 0) + 0.04);
+      if (idx !== speechActiveIdx) {
+        if (speechActiveIdx >= 0 && spans[speechActiveIdx]) spans[speechActiveIdx].classList.remove('active');
+        speechActiveIdx = idx;
+        const el = idx >= 0 ? spans[idx] : null;
+        if (el) {
+          el.classList.add('active');
+          // Centratura SOLO del box (mai scrollIntoView: trascinerebbe l'intera pagina).
+          if (centerCol) {
+            const br = centerCol.getBoundingClientRect();
+            const er = el.getBoundingClientRect();
+            if (er.top < br.top + 12 || er.bottom > br.bottom - 12) {
+              const delta = (er.top - br.top) - (centerCol.clientHeight / 2) + (er.height / 2);
+              centerCol.scrollTo({ top: centerCol.scrollTop + delta, behavior: 'smooth' });
+            }
+          }
+        }
+      }
+      speechRaf = requestAnimationFrame(tick);
+    }
+    speechRaf = requestAnimationFrame(tick);
   }
 
   // speak(track, onend): riproduce la narrazione ElevenLabs del brano.
@@ -2380,6 +2455,7 @@ STUDIO_HTML = """
 
   async function speak(track, onend) {
     // Stop anything currently playing.
+    clearSpeechKaraoke();
     try { window.speechSynthesis.cancel(); } catch (e) {}
     if (currentAudio) { try { currentAudio.pause(); } catch (e) {} currentAudio = null; }
 
@@ -2387,11 +2463,11 @@ STUDIO_HTML = """
     let audioB64 = (track && track.audio_b64) || '';
 
     // 1) Locale: se l'audio non è già pronto ma esiste l'endpoint TTS loopback,
-    //    generalo on-demand, un brano alla volta (in hosting TTS_ENDPOINT è vuoto).
+    //    genera on-demand audio + marche temporali (in hosting TTS_ENDPOINT è vuoto).
     if (!audioB64 && text && TTS_ENDPOINT) {
       setStatus('🗣️ Generating narration…');
-      audioB64 = await fetchTtsB64(text);
-      if (audioB64 && track) track.audio_b64 = audioB64;  // cache per non rigenerare
+      const res = await fetchTts(text);
+      if (res && track) { audioB64 = res.audio_b64; track.audio_b64 = audioB64; track.speech_marks = res.marks; }
     }
 
     // 2) Hosting (embedded): nessun endpoint loopback -> chiedi al server di generare
@@ -2403,11 +2479,13 @@ STUDIO_HTML = """
     }
 
     if (audioB64) {
+      renderSpeechWords(track);  // (ri)disegna le parole con span per il karaoke
       const audio = new Audio('data:audio/mpeg;base64,' + audioB64);
       currentAudio = audio;
-      audio.onended = () => { currentAudio = null; onend && onend(); };
-      audio.onerror = () => { currentAudio = null; onend && onend(); };
-      audio.play().catch(() => { currentAudio = null; onend && onend(); });
+      audio.onended = () => { clearSpeechKaraoke(); currentAudio = null; onend && onend(); };
+      audio.onerror = () => { clearSpeechKaraoke(); currentAudio = null; onend && onend(); };
+      audio.onplay = () => { startSpeechKaraoke(audio, track); };
+      audio.play().catch(() => { clearSpeechKaraoke(); currentAudio = null; onend && onend(); });
       return;
     }
 
@@ -2585,6 +2663,7 @@ def render_studio_component(studio: dict, tts_lang: str) -> None:
             "image": t.get("image", ""),
             "uri": t.get("uri", ""),
             "audio_b64": t.get("audio_b64", ""),
+            "speech_marks": t.get("speech_marks", []),
             "lyrics": t.get("lyrics", ""),
             "translated_lyrics": t.get("translated_lyrics", ""),
             "translation_lang": t.get("translation_lang", ""),
