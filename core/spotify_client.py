@@ -33,12 +33,15 @@ class SpotifyTrack:
     preview_url: str = ""
     album_image: str = ""
     popularity: int = 0
+    isrc: str = ""
     raw: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_api(cls, item: dict[str, Any]) -> "SpotifyTrack":
         artists = ", ".join(a.get("name", "") for a in item.get("artists", []))
         images = item.get("album", {}).get("images", [])
+        # L'ISRC e' la chiave per interrogare Songstats (tracks/stats?isrc=...).
+        isrc = str((item.get("external_ids") or {}).get("isrc", "") or "").upper()
         return cls(
             uri=item.get("uri", ""),
             name=item.get("name", ""),
@@ -47,6 +50,7 @@ class SpotifyTrack:
             preview_url=item.get("preview_url") or "",
             album_image=images[0]["url"] if images else "",
             popularity=int(item.get("popularity", 0) or 0),
+            isrc=isrc,
             raw=item,
         )
 

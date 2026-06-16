@@ -717,18 +717,39 @@ def musixmatch_track_payload(
 # Songstats (statistiche reali + soglia di notorieta')
 # --------------------------------------------------------------------------- #
 @functools.lru_cache(maxsize=512)
+def _resolve_isrc(title: str, artist: str) -> str:
+    """Risolve l'ISRC di una traccia via Spotify (chiave per le statistiche Songstats).
+
+    Le statistiche Songstats si interrogano per ISRC (``GET /tracks/stats?isrc=...``),
+    un identificatore univoco e affidabile: evita le ambiguita' della ricerca testuale.
+    In cache di processo e thread-safe (usabile dai worker senza contesto Streamlit).
+    """
+    if not settings.spotify_ready or not title:
+        return ""
+    try:
+        track = SpotifyClient().search_track(title, artist or None)
+    except Exception:  # noqa: BLE001 - mai propagare verso UI/filtri
+        return ""
+    return (track.isrc if track else "") or ""
+
+
+@functools.lru_cache(maxsize=512)
 def _songstats_track_stats(title: str, artist: str) -> dict[str, Any] | None:
     """Lookup Songstats per traccia, in cache di processo (thread-safe).
 
-    Restituisce un dict semplice (o ``None``) cosi' da poter essere usato sia nel
-    filtro di popolarita' sia nei grafici. NON usa ``st.cache_data`` perche' viene
+    Risolve prima l'ISRC via Spotify, poi interroga Songstats per ISRC (percorso
+    canonico). Restituisce un dict semplice (o ``None``) cosi' da poter essere usato sia
+    nel filtro di popolarita' sia nei grafici. NON usa ``st.cache_data`` perche' viene
     invocato anche da thread di lavoro privi del contesto Streamlit.
     """
     if not settings.songstats_ready or not (title or artist):
         return None
+    isrc = _resolve_isrc(title, artist)
+    if not isrc:
+        return None
     try:
-        stats = SongstatsClient().track_stats(title, artist)
-    except (SongstatsError, Exception):  # noqa: BLE001 - mai propagare verso la UI
+        stats = SongstatsClient().track_stats_by_isrc(isrc, title, artist)
+    except Exception:  # noqa: BLE001 - mai propagare verso la UI
         return None
     if not stats or stats.is_empty:
         return None
@@ -739,6 +760,7 @@ def _songstats_track_stats(title: str, artist: str) -> dict[str, Any] | None:
         "sources": stats.sources,
         "total_streams": stats.total_streams,
         "headline": stats.headline_metrics(),
+        "isrc": isrc,
     }
 
 
@@ -2103,6 +2125,13 @@ def render_songstats_section(studio: dict) -> None:
         st.caption(
             "Set `SONGSTATS_API_KEY` in `.env` to show real streaming/popularity "
             "stats here (streams, followers, playlists…)."
+        )
+        return
+
+    if not settings.spotify_ready:
+        st.caption(
+            "Songstats stats are looked up by ISRC, resolved via Spotify. "
+            "Set `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET` in `.env` to enable them."
         )
         return
 

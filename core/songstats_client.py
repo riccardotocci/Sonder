@@ -139,6 +139,24 @@ class SongstatsClient:
         return {}
 
     @staticmethod
+    def _track_info(payload: dict[str, Any]) -> dict[str, Any]:
+        """Estrae il blocco di metadati della traccia dalla risposta /tracks/stats."""
+        for key in ("track_info", "track", "info", "data"):
+            value = payload.get(key)
+            if isinstance(value, dict) and value:
+                return value
+        return {}
+
+    @staticmethod
+    def _artists_text(info: dict[str, Any]) -> str:
+        artists = info.get("artists") or []
+        if isinstance(artists, list) and artists:
+            return ", ".join(
+                str(a.get("name", a)) if isinstance(a, dict) else str(a) for a in artists
+            )
+        return str(info.get("artist_name") or "")
+
+    @staticmethod
     def _extract_sources(payload: dict[str, Any]) -> dict[str, dict[str, float]]:
         """Estrae la mappa fonte -> {metrica: valore} dalla risposta /stats."""
         sources: dict[str, dict[str, float]] = {}
@@ -163,6 +181,39 @@ class SongstatsClient:
     # ------------------------------------------------------------------ #
     # High-level
     # ------------------------------------------------------------------ #
+    def track_stats_by_isrc(
+        self, isrc: str, name: str = "", artist: str = ""
+    ) -> Optional[SongstatsStats]:
+        """Statistiche di una traccia interrogando Songstats per ISRC.
+
+        Percorso canonico (vedi docs): ``GET /tracks/stats?isrc=...``. L'ISRC e' un
+        identificatore univoco e affidabile (ricavato da Spotify), quindi evita la
+        fase di ricerca testuale e le sue ambiguita'. ``name``/``artist`` servono solo
+        come etichette di fallback se il payload non le riporta.
+        """
+        isrc = (isrc or "").strip().upper()
+        if not isrc:
+            return None
+        try:
+            payload = self._request("tracks/stats", isrc=isrc)
+        except SongstatsError as exc:
+            logger.warning("Songstats stats by ISRC failed (%s): %s", isrc, exc)
+            raise
+        info = self._track_info(payload)
+        sources = self._extract_sources(payload)
+        if not sources:
+            return None
+        return SongstatsStats(
+            songstats_id=str(
+                info.get("songstats_track_id") or info.get("id") or ""
+            ),
+            name=str(info.get("title") or name),
+            subtitle=self._artists_text(info) or artist,
+            avatar=str(info.get("avatar") or info.get("image_url") or ""),
+            sources=sources,
+            raw=payload,
+        )
+
     def track_stats(self, title: str, artist: str = "") -> Optional[SongstatsStats]:
         """Cerca la traccia per titolo (+ artista) e ne restituisce le statistiche."""
         query = " ".join(p for p in (title, artist) if p).strip()
