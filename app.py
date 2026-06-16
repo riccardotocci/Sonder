@@ -17,6 +17,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import pandas as pd
 import requests
@@ -154,6 +155,47 @@ def musixmatch_translation_code(lang_name: str = "Auto", lang_code: str = "EN") 
         MUSIXMATCH_TRANSLATION_LANG.get(lang_name)
         or MUSIXMATCH_TRANSLATION_LANG_BY_CODE.get(lang_code.upper(), "en")
     )
+
+
+# Codici di traduzione Musixmatch supportati (ISO 639-1, minuscolo).
+MUSIXMATCH_SUPPORTED_LANGS: set[str] = {
+    "en", "it", "fr", "es", "de", "pt", "nl", "pl", "ru", "ja", "zh", "ko", "ar",
+}
+
+
+def _normalize_mxm_lang(code: str) -> str:
+    """Normalizza un codice lingua (es. 'IT', 'it-IT', 'ita') a un codice Musixmatch.
+
+    Ritorna '' se la lingua non è supportata, così il chiamante può ripiegare.
+    """
+    raw = str(code or "").strip().lower().replace("_", "-")
+    if not raw:
+        return ""
+    short = raw.split("-")[0]
+    # Alias comuni e ISO 639-2 -> 639-1.
+    aliases = {
+        "ita": "it", "eng": "en", "fra": "fr", "fre": "fr", "spa": "es",
+        "ger": "de", "deu": "de", "por": "pt", "nld": "nl", "dut": "nl",
+        "pol": "pl", "rus": "ru", "jpn": "ja", "jp": "ja", "zho": "zh",
+        "chi": "zh", "cn": "zh", "kor": "ko", "kr": "ko", "ara": "ar",
+    }
+    short = aliases.get(short, short)
+    return short if short in MUSIXMATCH_SUPPORTED_LANGS else ""
+
+
+def _plan_translation_lang(
+    plan: dict[str, Any], lang_name: str = "Auto", lang_code: str = "EN"
+) -> str:
+    """Lingua di traduzione del testo (Task 5).
+
+    Preferisci la lingua di narrazione rilevata dal router LLM (``narration_lang``),
+    così la riga di testo non-sincronizzata è nella stessa lingua della narrazione.
+    Fallback: lingua UI selezionata o inglese.
+    """
+    narration = _normalize_mxm_lang(str((plan or {}).get("narration_lang", "")))
+    if narration:
+        return narration
+    return musixmatch_translation_code(lang_name, lang_code)
 
 # Saluto iniziale della chat per ciascuna lingua (per "Auto" usiamo un saluto bilingue).
 GREETINGS: dict[str, str] = {
@@ -943,18 +985,21 @@ def search_musixmatch_from_plan(
     results: list[dict[str, Any]] = []
     seen: set[int] = set()
     mx_client = MusixmatchClient()
-    translation_lang = MUSIXMATCH_TRANSLATION_LANG.get(lang_name, "en")
+    translation_lang = _plan_translation_lang(plan, lang_name)
     try:
-        limit = int(plan.get("limit", 8))
+        limit = int(plan.get("limit", 10))
     except (TypeError, ValueError):
-        limit = 8
-    limit = max(1, min(limit, 8))
+        limit = 10
+    limit = max(1, min(limit, 10))
 
     queries = plan.get("queries") or []
     if not isinstance(queries, list):
         queries = []
 
-    # 1) Raccogli i match unici (in ordine) senza ancora scaricare testi/richsync.
+    # 1) UNA traccia per query (diversità tematica): il piano contiene molte query
+    #    articolate; prendiamo UN SOLO match nuovo da ciascuna invece di lasciare che
+    #    la prima query riempia tutti gli slot. Così risultati piu' vari e pertinenti.
+    #    Scarichiamo testi/richsync dopo, in parallelo, preservando l'ordine.
     collected: list[tuple[Any, str]] = []  # (Track, reason)
     for query in queries:
         if len(collected) >= limit or not isinstance(query, dict):
@@ -973,18 +1018,18 @@ def search_musixmatch_from_plan(
                 artist=q_artist or None,
                 lyrics=q_lyrics or None,
                 has_lyrics=True,
-                limit=limit - len(collected),
+                limit=3,
             )
         except MusixmatchError as exc:
             notes.append(f"Musixmatch: {exc}")
             continue
+        # Aggiungi UN SOLO match nuovo per questa query, poi passa alla successiva.
         for match in matches:
             if match.track_id in seen:
                 continue
             seen.add(match.track_id)
             collected.append((match, reason))
-            if len(collected) >= limit:
-                break
+            break
 
     # 2) Scarica testo/richsync/traduzione in PARALLELO (task 9), preservando l'ordine.
     #    Un client per worker: evita di condividere la stessa requests.Session tra thread.
@@ -1185,24 +1230,257 @@ def empty_studio(prompt: str) -> dict:
     return {"prompt": prompt, "tracks": [], "summary": "", "moods": []}
 
 
-@functools.lru_cache(maxsize=256)
-def _elevenlabs_audio_b64(text: str, voice_id: str) -> str:
-    """Genera (in cache di processo) l'MP3 ElevenLabs per *text* e lo ritorna base64.
+def fetch_audiodb_ordered_context(
+    client: AudioDBClient,
+    *,
+    artist: str,
+    title: str = "",
+    album: str = "",
+    lang_code: str = "EN",
+) -> dict[str, str]:
+    """Recupera le sezioni AudioDB (brano -> album -> artista) se il client le espone.
 
-    Task 1: l'audio di narrazione viene prodotto lato server (Python) così funziona
-    anche in hosting (sonder.streamlit.app), dove il browser non può raggiungere il
-    server TTS locale (127.0.0.1). La cache per (testo, voce) evita di rigenerare lo
-    stesso clip tra i rerun. Thread-safe: usabile dai worker senza contesto Streamlit
-    (non tocca ``st.session_state``).
+    getattr-safe: tollera client privi del metodo o con firme piu' vecchie.
     """
-    if not settings.elevenlabs_ready or not text.strip():
+    empty = {"song_news": "", "album_news": "", "artist_description": "", "combined": ""}
+    get_ordered_context = getattr(client, "get_ordered_context", None)
+    if not callable(get_ordered_context):
+        return empty
+    try:
+        sections = get_ordered_context(
+            artist=artist, title=title, album=album, language=lang_code
+        )
+    except TypeError:
+        sections = get_ordered_context(artist=artist, title=title, language=lang_code)
+    if not isinstance(sections, dict):
+        return empty
+    return {key: str(sections.get(key) or "").strip() for key in empty}
+
+
+def fetch_audiodb_music_fact(
+    client: AudioDBClient,
+    *,
+    artist: str,
+    title: str = "",
+    album: str = "",
+    lang_code: str = "EN",
+) -> str:
+    """Recupera una curiosita' verificata AudioDB sul brano/album, se disponibile."""
+    get_music_fact = getattr(client, "get_music_fact", None)
+    if not callable(get_music_fact):
         return ""
     try:
-        audio = ElevenLabsClient().text_to_speech(text, voice_id=voice_id or None)
-    except ElevenLabsError as exc:
-        logger.warning("ElevenLabs pre-generation failed: %s", exc)
+        fact = get_music_fact(artist=artist, title=title, album=album, language=lang_code)
+    except TypeError:
+        fact = get_music_fact(artist=artist, title=title, language=lang_code)
+    return str(fact or "").strip()
+
+
+def fetch_audiodb_track_text(
+    client: AudioDBClient,
+    *,
+    artist: str,
+    title: str = "",
+    album: str = "",
+    lang_code: str = "EN",
+) -> str:
+    """Recupera testo/contesto verificato del brano da AudioDB, se disponibile."""
+    get_track_text = getattr(client, "get_track_text", None)
+    if not callable(get_track_text):
         return ""
+    try:
+        text = get_track_text(artist=artist, title=title, album=album, language=lang_code)
+    except TypeError:
+        text = get_track_text(artist=artist, title=title, language=lang_code)
+    return str(text or "").strip()
+
+
+
+@functools.lru_cache(maxsize=256)
+def _persisted_voice_id() -> str:
+    return settings.elevenlabs_voice_id or ElevenLabsClient.DEFAULT_VOICE
+
+
+def _tts_mode() -> str:
+    """Modalità di consegna dell'audio ElevenLabs configurata (SONDER_TTS_MODE)."""
+    return str(getattr(settings, "sonder_tts_mode", "auto") or "auto").strip().lower()
+
+
+def _tts_disabled() -> bool:
+    return _tts_mode() in {"off", "disabled", "none", "false", "0"}
+
+
+def _streamlit_cloud_url_configured() -> bool:
+    """True se l'app gira (o è configurata) su *.streamlit.app (hosting cloud)."""
+    urls = [settings.spotify_redirect_uri]
+    try:
+        context_url = str(getattr(getattr(st, "context", None), "url", "") or "")
+    except Exception:
+        context_url = ""
+    if context_url:
+        urls.append(context_url)
+    for raw_url in urls:
+        try:
+            hostname = urlparse(raw_url).hostname or ""
+        except Exception:
+            hostname = ""
+        if hostname == "streamlit.app" or hostname.endswith(".streamlit.app"):
+            return True
+    return False
+
+
+def _use_embedded_tts() -> bool:
+    """Audio base64 generato on-demand lato server (hosting) vs loopback locale (dev)."""
+    mode = _tts_mode()
+    if mode in {"embedded", "embed", "base64", "cloud", "streamlit"}:
+        return True
+    if mode in {"local", "server", "loopback"}:
+        return False
+    return _streamlit_cloud_url_configured()
+
+
+def _tts_delivery_label() -> str:
+    if _tts_disabled():
+        return "off"
+    return "embedded" if _use_embedded_tts() else "local"
+
+
+def _track_narration_text(track: dict) -> str:
+    primary_text = str(track.get("speech", "") or "").strip()
+    fallback_text = " ".join(
+        str(track.get(key, "") or "").strip()
+        for key in ("musixmatch_speech", "audiodb_speech")
+        if str(track.get(key, "") or "").strip()
+    ).strip()
+    return (primary_text or fallback_text)[:3500]
+
+
+@st.cache_data(show_spinner=False)
+def _elevenlabs_audio_b64(
+    text: str,
+    voice_id: str,
+    model_id: str,
+    output_format: str,
+) -> str:
+    """Genera (con cache) l'MP3 ElevenLabs per *text* e lo ritorna base64.
+
+    Task 4: l'audio viene prodotto lato server (Python) UN brano alla volta, quando
+    l'utente preme Play, così funziona anche in hosting (sonder.streamlit.app) dove
+    il browser non può raggiungere il server TTS locale (127.0.0.1). La cache per
+    (testo, voce, modello, formato) evita di rigenerare lo stesso clip tra i rerun.
+    """
+    audio = ElevenLabsClient().text_to_speech(
+        text,
+        voice_id=voice_id,
+        model_id=model_id,
+        output_format=output_format,
+    )
     return base64.b64encode(audio).decode("ascii")
+
+
+def _ensure_track_elevenlabs_audio(track: dict) -> bool:
+    """Popola ``audio_b64`` per UN brano quando viene premuto Play. True se pronto."""
+    if track.get("audio_b64"):
+        return True
+    text = _track_narration_text(track)
+    if not text:
+        return False
+    track["audio_b64"] = _elevenlabs_audio_b64(
+        text,
+        _persisted_voice_id(),
+        ElevenLabsClient.DEFAULT_MODEL,
+        ElevenLabsClient.DEFAULT_OUTPUT_FORMAT,
+    )
+    return True
+
+
+def _query_param_value(name: str, default: str = "") -> str:
+    value = st.query_params.get(name, default)
+    if isinstance(value, list):
+        value = value[0] if value else default
+    return str(value or default)
+
+
+def _clear_tts_query_params() -> None:
+    for key in (
+        "sonder_tts_track",
+        "sonder_tts_seq",
+        "sonder_tts_order",
+        "sonder_tts_pos",
+        "sonder_tts_nonce",
+    ):
+        if key in st.query_params:
+            del st.query_params[key]
+
+
+def _parse_tts_order(raw_order: str, track_count: int) -> list[int]:
+    order: list[int] = []
+    for raw_item in raw_order.split(","):
+        try:
+            index = int(raw_item)
+        except ValueError:
+            continue
+        if 0 <= index < track_count and index not in order:
+            order.append(index)
+    return order
+
+
+def handle_embedded_tts_request(studio: dict) -> None:
+    """Genera UN clip ElevenLabs richiesto dall'iframe (modalità embedded/hosting).
+
+    L'iframe naviga il parent con ``?sonder_tts_track=i`` quando serve l'audio del
+    brano *i*; qui lo generiamo lato server, salviamo lo stato di autoplay e facciamo
+    rerun: al reload l'iframe riprende la riproduzione di quel brano (ora con audio).
+    """
+    raw_index = _query_param_value("sonder_tts_track")
+    if not raw_index:
+        return
+    tracks = studio.get("tracks") or []
+    try:
+        index = int(raw_index)
+    except ValueError:
+        _clear_tts_query_params()
+        st.rerun()
+        return
+    if not (0 <= index < len(tracks)):
+        _clear_tts_query_params()
+        st.rerun()
+        return
+
+    seq = _query_param_value("sonder_tts_seq") == "1"
+    order = _parse_tts_order(_query_param_value("sonder_tts_order"), len(tracks))
+    if not order:
+        order = list(range(len(tracks)))
+    try:
+        pos = int(_query_param_value("sonder_tts_pos", "0"))
+    except ValueError:
+        pos = 0
+
+    audio_ready = bool(tracks[index].get("audio_b64"))
+    if settings.elevenlabs_ready and _use_embedded_tts() and not _tts_disabled():
+        with st.spinner("Generating ElevenLabs narration audio…"):
+            title = str(tracks[index].get("title", f"track {index + 1}") or f"track {index + 1}")
+            try:
+                audio_ready = _ensure_track_elevenlabs_audio(tracks[index])
+                if not audio_ready:
+                    studio.setdefault("llm_log", []).append(
+                        {"step": "ElevenLabs TTS", "detail": f"Narration text missing for {title}."}
+                    )
+            except ElevenLabsError as exc:
+                studio.setdefault("llm_log", []).append(
+                    {"step": "ElevenLabs TTS", "detail": f"Audio generation failed for {title}: {exc}"}
+                )
+
+    if audio_ready:
+        st.session_state["_sonder_tts_autoplay"] = {
+            "index": index,
+            "seq": seq,
+            "order": order,
+            "pos": max(0, min(pos, max(len(order) - 1, 0))),
+        }
+    _clear_tts_query_params()
+    st.rerun()
+
 
 
 def build_studio(
@@ -1210,13 +1488,17 @@ def build_studio(
     tracks: list[dict[str, str]],
     lang_name: str,
     lang_code: str,
+    translation_lang: str = "",
 ) -> dict:
     """Arricchisce i brani con: discorso parlato, immagine artista, id Spotify e geo."""
     enriched: list[dict] = [dict(t) for t in tracks]
     summary = ""
     moods: list[str] = []
 
-    translation_lang = musixmatch_translation_code(lang_name, lang_code)
+    # Task 5: se il router ha rilevato la lingua di narrazione, traduci il testo
+    # Musixmatch in QUELLA lingua (così la riga grande non-sincronizzata è nella
+    # lingua della voce). Altrimenti ripiega sulla lingua UI / inglese.
+    translation_lang = translation_lang or musixmatch_translation_code(lang_name, lang_code)
 
     # 1) Pre-fetch in PARALLELO (task 9) per ogni brano: correzione metadati Musixmatch,
     #    testo/richsync/traduzione, bio (AudioDB -> Last.fm) e immagine artista.
@@ -1281,14 +1563,43 @@ def build_studio(
                 t.setdefault("lyrics", "")
                 t.setdefault("richsync", [])
 
-        # 1b) Bio + immagine da AudioDB (usa il nome artista già corretto da Musixmatch)
+        # 1b) Bio + immagine + contesto verificato da AudioDB (usa il nome artista
+        #     già corretto da Musixmatch).
         bio = ""
         if settings.audiodb_ready and artist:
             try:
-                a = AudioDBClient().get_artist(artist)
+                adb = AudioDBClient()
+                a = adb.get_artist(artist)
                 if a:
                     bio = a.biography(lang_code) or ""
                     t["image"] = a.image_url
+                # Task 3: contesto verificato (brano -> album -> artista) + curiosità,
+                # così la narrazione è ancorata a fatti reali (TheAudioDB), non solo al
+                # testo Musixmatch. I campi sono letti da Storyteller.studio_brief().
+                album = str(t.get("album", ""))
+                ctx = fetch_audiodb_ordered_context(
+                    adb, artist=artist, title=title, album=album, lang_code=lang_code
+                )
+                if ctx.get("song_news"):
+                    t["audio_db_song_news"] = ctx["song_news"]
+                if ctx.get("album_news"):
+                    t["audio_db_album_news"] = ctx["album_news"]
+                if ctx.get("artist_description"):
+                    t["audio_db_artist_description"] = ctx["artist_description"]
+                if ctx.get("combined"):
+                    t["audio_db_text"] = ctx["combined"]
+                if not t.get("audio_db_text"):
+                    text = fetch_audiodb_track_text(
+                        adb, artist=artist, title=title, album=album, lang_code=lang_code
+                    )
+                    if text:
+                        t["audio_db_text"] = text
+                if not t.get("audio_db_fact"):
+                    fact = fetch_audiodb_music_fact(
+                        adb, artist=artist, title=title, album=album, lang_code=lang_code
+                    )
+                    if fact:
+                        t["audio_db_fact"] = fact
             except AudioDBError:
                 pass
 
@@ -1346,29 +1657,32 @@ def build_studio(
         t.setdefault("translated_lyrics", "")
         t.setdefault("translation_lang", translation_lang)
         t.setdefault("richsync", [])
+        t.setdefault("audio_db_song_news", "")
+        t.setdefault("audio_db_album_news", "")
+        t.setdefault("audio_db_artist_description", "")
+        t.setdefault("audio_db_text", "")
+        t.setdefault("audio_db_fact", "")
 
-    # 4) Task 1: pre-genera l'audio di narrazione ElevenLabs LATO SERVER (Python) e
-    #    allegalo a ogni brano come base64 (campo ``audio_b64``). Così la voce
-    #    ElevenLabs funziona anche in hosting (sonder.streamlit.app), dove il browser
-    #    non può raggiungere il server TTS locale (127.0.0.1). La generazione è in
-    #    parallelo e con cache per testo: il Web Speech API resta solo come ultima
-    #    spiaggia (vedi speak() in STUDIO_HTML) quando ElevenLabs non è configurato.
-    if settings.elevenlabs_ready:
-        voice_id = settings.elevenlabs_voice_id or ""
-        pending = [
-            (i, t.get("speech", ""))
-            for i, t in enumerate(enriched)
-            if str(t.get("speech", "")).strip() and not t.get("audio_b64")
-        ]
-        if pending:
-            def make_audio(item: tuple[int, str]) -> tuple[int, str]:
-                idx, text = item
-                return idx, _elevenlabs_audio_b64(text, voice_id)
-
-            with ThreadPoolExecutor(max_workers=min(8, len(pending))) as executor:
-                for idx, audio_b64 in executor.map(make_audio, pending):
-                    if audio_b64:
-                        enriched[idx]["audio_b64"] = audio_b64
+    # 4) Task 4: l'audio di narrazione ElevenLabs NON viene più pre-generato qui.
+    #    Viene prodotto UN brano alla volta quando l'utente preme Play:
+    #      - in locale, on-demand via endpoint TTS loopback (vedi speak() / fetchTtsB64);
+    #      - in hosting (sonder.streamlit.app), on-demand lato server tramite la
+    #        richiesta embedded dell'iframe (vedi handle_embedded_tts_request()).
+    #    Il Web Speech API del browser resta solo come ultima spiaggia.
+    if settings.elevenlabs_ready and not _tts_disabled():
+        if _use_embedded_tts():
+            tts_message = (
+                "Narration audio is generated server-side one track at a time when you press Play."
+            )
+        else:
+            tts_message = (
+                "Narration audio is generated on demand through the local TTS endpoint, one track at a time."
+            )
+        add_llm_log("ElevenLabs TTS", tts_message)
+    elif settings.elevenlabs_ready:
+        add_llm_log("ElevenLabs TTS", "SONDER_TTS_MODE disables narration audio.")
+    else:
+        add_llm_log("ElevenLabs TTS", "ELEVENLABS_API_KEY is missing: narration audio is disabled.")
 
     return {"prompt": prompt, "tracks": enriched, "summary": summary, "moods": moods}
 
@@ -1417,6 +1731,7 @@ STUDIO_HTML = """
     background: linear-gradient(165deg, rgba(255,255,255,.05), rgba(255,255,255,.02));
     border: 1px solid rgba(255,255,255,0.08);
     border-radius: 16px; padding: 14px; overflow-y: auto;
+    overscroll-behavior: contain;
     box-shadow: 0 10px 30px rgba(0,0,0,0.35);
     backdrop-filter: blur(10px);
   }
@@ -1493,6 +1808,7 @@ STUDIO_HTML = """
     flex: 1 1 auto; min-height: 160px; overflow-y: auto; padding: 10px 14px;
     background: rgba(255,255,255,.03); border-radius: 12px;
     border: 1px solid rgba(255,255,255,.08); scroll-behavior: smooth;
+    overscroll-behavior: contain;
   }
   .lyr-empty { color: #6f6a85; font-size: .82rem; font-style: italic; padding: 6px; }
   .lyr-line {
@@ -1551,6 +1867,11 @@ STUDIO_HTML = """
   // un clip alla volta. Vuoto => fallback alla Web Speech API del browser.
   const TTS_ENDPOINT = __TTS_ENDPOINT__;
   const TTS_TOKEN = __TTS_TOKEN__;
+  // Task 4: modalità di consegna audio ('local' = endpoint loopback, 'embedded' =
+  // generazione server-side via rerun in hosting, 'off' = Web Speech) e stato di
+  // autoplay quando si rientra dopo aver generato l'audio embedded di un brano.
+  const TTS_MODE = __TTS_MODE__;
+  const AUTOPLAY = __AUTOPLAY__;
   // Task 2: tolleranza (secondi) per l'allineamento del richsync (anticipo highlight).
   const LYRIC_OFFSET = 0.18;
   const PALETTE = ["#ff2d78","#f97316","#22d3ee","#facc15","#c2410c","#34d399"];
@@ -1940,6 +2261,25 @@ STUDIO_HTML = """
   // base64 in track.audio_b64 (funziona anche in hosting, senza server TTS
   // locale). Se manca, in locale prova l'endpoint loopback; il Web Speech API
   // resta solo come ultima spiaggia quando ElevenLabs non è configurato.
+  // Task 4: in hosting (modalità embedded) l'audio non è pre-generato e non c'è un
+  // endpoint loopback raggiungibile dal browser. Chiediamo quindi al server di
+  // generare l'audio di QUESTO brano navigando il parent con i query param: Streamlit
+  // rigenera la pagina, produce il clip e, al reload, AUTOPLAY riprende la riproduzione.
+  function requestEmbeddedTts(i) {
+    const activeOrder = (order && order.length) ? order : TRACKS.map((_, idx) => idx);
+    let url;
+    try { url = new URL(document.referrer || window.location.href); }
+    catch (e) { url = new URL(window.location.href); }
+    url.searchParams.set('sonder_tts_track', String(i));
+    url.searchParams.set('sonder_tts_seq', autoSeq ? '1' : '0');
+    url.searchParams.set('sonder_tts_order', activeOrder.join(','));
+    url.searchParams.set('sonder_tts_pos', String(Math.max(0, seqPos)));
+    url.searchParams.set('sonder_tts_nonce', String(Date.now()));
+    setStatus('🗣️ Generating ElevenLabs narration…');
+    try { window.parent.location.href = url.toString(); }
+    catch (e) { window.location.href = url.toString(); }
+  }
+
   async function speak(track, onend) {
     // Stop anything currently playing.
     try { window.speechSynthesis.cancel(); } catch (e) {}
@@ -1948,12 +2288,20 @@ STUDIO_HTML = """
     const text = (track && track.speech) || '';
     let audioB64 = (track && track.audio_b64) || '';
 
-    // Fallback solo locale: se l'audio non è stato pre-generato ma esiste un
-    // endpoint TTS loopback, generalo on-demand (in hosting TTS_ENDPOINT è vuoto).
+    // 1) Locale: se l'audio non è già pronto ma esiste l'endpoint TTS loopback,
+    //    generalo on-demand, un brano alla volta (in hosting TTS_ENDPOINT è vuoto).
     if (!audioB64 && text && TTS_ENDPOINT) {
       setStatus('🗣️ Generating narration…');
       audioB64 = await fetchTtsB64(text);
       if (audioB64 && track) track.audio_b64 = audioB64;  // cache per non rigenerare
+    }
+
+    // 2) Hosting (embedded): nessun endpoint loopback -> chiedi al server di generare
+    //    questo brano e ricarica. onend NON viene chiamato: dopo il rerun riprende
+    //    AUTOPLAY (vedi blocco di init in fondo).
+    if (!audioB64 && text && !TTS_ENDPOINT && TTS_MODE === 'embedded') {
+      const idx = TRACKS.indexOf(track);
+      if (idx >= 0) { requestEmbeddedTts(idx); return; }
     }
 
     if (audioB64) {
@@ -2098,9 +2446,23 @@ STUDIO_HTML = """
         document.getElementById('need-login').textContent = 'Log in to your Spotify in the sidebar to resolve missing track URIs and enable the player.';
     }
     if (TRACKS.length) {
-        current = 0;
-        highlight(0);
-        showCenter(0);
+        // Task 4: se rientriamo dopo aver generato l'audio embedded di un brano,
+        // AUTOPLAY indica quale brano riprendere (e in quale ordine/sequenza).
+        const ap = (AUTOPLAY && typeof AUTOPLAY === 'object') ? AUTOPLAY : {};
+        const apIndex = Number.isInteger(ap.index) ? ap.index : -1;
+        if (apIndex >= 0 && apIndex < TRACKS.length) {
+            order = (Array.isArray(ap.order) && ap.order.length) ? ap.order : TRACKS.map((_, i) => i);
+            autoSeq = Boolean(ap.seq);
+            seqPos = Number.isInteger(ap.pos) ? Math.max(0, ap.pos) : 0;
+            current = apIndex;
+            highlight(apIndex);
+            showCenter(apIndex);
+            setTimeout(() => runTrack(apIndex, true, autoSeq), 250);
+        } else {
+            current = 0;
+            highlight(0);
+            showCenter(0);
+        }
   }
 </script>
 <script src="https://open.spotify.com/embed/iframe-api/v1" async></script>
@@ -2137,18 +2499,18 @@ def render_studio_component(studio: dict, tts_lang: str) -> None:
         f"Sonder · {studio.get('prompt', '')[:60]}", ensure_ascii=False
     )
     token_json = json.dumps(spotify_token())
-    # Task 1: l'audio di narrazione ElevenLabs è PRE-GENERATO lato server e arriva
-    # già come base64 in ogni brano (campo ``audio_b64``), quindi funziona anche in
-    # hosting senza il server loopback. L'endpoint loopback viene avviato SOLO in
-    # locale e SOLO come fallback per gli eventuali brani con testo ma senza audio
-    # pre-generato. In modalità "embedded" o senza chiave resta vuoto (Web Speech).
+    # Task 4: l'audio di narrazione ElevenLabs è generato ON-DEMAND, un brano alla
+    # volta, quando l'utente preme Play:
+    #   - in LOCALE (label "local"): tramite il server TTS loopback (endpoint qui sotto);
+    #   - in HOSTING (label "embedded"): lato server tramite richiesta embedded
+    #     dell'iframe (vedi handle_embedded_tts_request) -> nessun endpoint loopback.
+    # Web Speech resta l'ultima spiaggia ("off" o ElevenLabs non configurato).
     tts_endpoint = ""
     tts_token = ""
-    mode = (getattr(settings, "sonder_tts_mode", "auto") or "auto").lower()
-    needs_loopback = any(
-        str(t.get("speech", "")).strip() and not t.get("audio_b64") for t in tracks
-    )
-    if settings.elevenlabs_ready and mode != "embedded" and needs_loopback:
+    # Senza chiave ElevenLabs nessuna consegna audio è possibile: l'iframe va dritto
+    # al Web Speech ("off"), così in hosting non scatta un reload inutile al Play.
+    tts_label = _tts_delivery_label() if settings.elevenlabs_ready else "off"
+    if settings.elevenlabs_ready and not _tts_disabled() and not _use_embedded_tts():
         try:
             info = tts_server.ensure_tts_server()
             tts_endpoint = info.endpoint
@@ -2156,6 +2518,9 @@ def render_studio_component(studio: dict, tts_lang: str) -> None:
         except tts_server.TTSServerError:
             tts_endpoint = ""
             tts_token = ""
+    # Stato di autoplay impostato da handle_embedded_tts_request dopo aver generato
+    # l'audio embedded del brano richiesto: alla prossima resa l'iframe lo riprende.
+    autoplay = st.session_state.pop("_sonder_tts_autoplay", {}) or {}
     # I valori sono inseriti come letterali JS: vanno serializzati con json.dumps.
     rendered = (
         STUDIO_HTML.replace("__TRACKS__", tracks_json)
@@ -2164,6 +2529,8 @@ def render_studio_component(studio: dict, tts_lang: str) -> None:
         .replace("__TOKEN__", token_json)
         .replace("__TTS_ENDPOINT__", json.dumps(tts_endpoint))
         .replace("__TTS_TOKEN__", json.dumps(tts_token))
+        .replace("__TTS_MODE__", json.dumps(tts_label))
+        .replace("__AUTOPLAY__", json.dumps(autoplay))
     )
     components.html(rendered, height=860, scrolling=False)
 
@@ -2449,6 +2816,7 @@ def handle_user_input(
                 f"music_related={plan.get('music_related', True)}, "
                 f"needs_search={plan.get('needs_search', True)}, "
                 f"limit={plan.get('limit', 8)}, "
+                f"narration_lang={plan.get('narration_lang') or '(auto)'}, "
                 f"query_count={len(query_details)}"
                 + ("\nQueries: " + "; ".join(query_details) if query_details else ""),
             )
@@ -2524,7 +2892,14 @@ def handle_user_input(
             st.session_state["messages"].append(
                 {"role": "assistant", "content": user_facing_llm_error(exc), "tracks": tracks, "llm_log": current_llm_log()}
             )
-            studio = build_studio(prompt, tracks, lang_name, lang_code) if tracks else empty_studio(prompt)
+            studio = (
+                build_studio(
+                    prompt, tracks, lang_name, lang_code,
+                    translation_lang=_plan_translation_lang(plan, lang_name, lang_code),
+                )
+                if tracks
+                else empty_studio(prompt)
+            )
             studio["llm_log"] = current_llm_log()
             st.session_state["studio"] = studio
             return
@@ -2538,7 +2913,10 @@ def handle_user_input(
 
     if tracks:
         with st.spinner("Building the narrated studio (speeches, photos, geography)…"):
-            studio = build_studio(prompt, tracks, lang_name, lang_code)
+            studio = build_studio(
+                prompt, tracks, lang_name, lang_code,
+                translation_lang=_plan_translation_lang(plan, lang_name, lang_code),
+            )
         add_llm_log(
             "Studio built",
             f"Narration, photos and geography ready for {len(studio.get('tracks', []))} track(s).",
@@ -2733,6 +3111,12 @@ def main() -> None:
 
     studio = st.session_state.get("studio")
     has_tracks = bool(studio and studio.get("tracks"))
+
+    # Task 4: se l'iframe della regia ha richiesto la generazione embedded dell'audio
+    # di un brano (hosting), produciamolo ora lato server e facciamo rerun PRIMA di
+    # disegnare la UI. No-op se non c'è la query string ?sonder_tts_track.
+    if has_tracks:
+        handle_embedded_tts_request(studio)
 
     # --- Barra superiore: solo il titolo del progetto ---
     logo_b64 = _logo_b64("logo_text.png")

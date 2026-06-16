@@ -143,12 +143,14 @@ Regole:
 - Non inventare titoli o artisti.
 - reason: descrizione semplice, massimo 5 parole.
 - reason NON deve citare genere, mood, emozioni generiche, strumenti o lingua.
+- narration_lang: codice ISO 639-1 (2 lettere minuscole, es. "it", "en", "fr", "es", "de") della lingua dell'ULTIMO messaggio dell'utente. È la lingua in cui l'utente scrive e in cui sarà scritta/narrata la risposta.
 
 Schema:
 {{
   "music_related": true,
   "needs_search": true,
     "limit": 10,
+  "narration_lang": "it",
   "queries": [
     {{
       "q": "",
@@ -988,10 +990,12 @@ class Storyteller:
             limit = 10
         else:
             queries = _dedupe_queries(queries)
+        narration_lang = str(data.get("narration_lang", "")).strip().lower()
         return {
             "music_related": as_bool(data.get("music_related"), True),
             "needs_search": needs_search,
             "limit": limit,
+            "narration_lang": narration_lang,
             "queries": queries[:20],
         }
 
@@ -1016,6 +1020,7 @@ class Storyteller:
             "music_related": True,
             "needs_search": bool(queries),
             "limit": 10,
+            "narration_lang": "",
             "queries": _dedupe_queries(queries)[:20],
             "_router_fallback": reason or "Used local Musixmatch query fallback.",
         }
