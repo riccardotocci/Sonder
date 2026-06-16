@@ -19,8 +19,9 @@ import requests
 AUTH_URL = "https://accounts.spotify.com/authorize"
 TOKEN_URL = "https://accounts.spotify.com/api/token"
 
-# Permesso minimo: solo lettura del profilo (per la ricerca brani col token utente).
-SCOPES = "user-read-private"
+# Permessi minimi: lettura profilo (ricerca brani col token utente) +
+# user-top-read per derivare temi narrativi dagli ascolti reali (task 10).
+SCOPES = "user-read-private user-top-read"
 
 
 class SpotifyPKCEError(RuntimeError):

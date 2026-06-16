@@ -27,6 +27,9 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "EmotionalAnalysis": (".storyteller", "EmotionalAnalysis"),
     "SpotifyClient": (".spotify_client", "SpotifyClient"),
     "SpotifyError": (".spotify_client", "SpotifyError"),
+    "SongstatsClient": (".songstats_client", "SongstatsClient"),
+    "SongstatsError": (".songstats_client", "SongstatsError"),
+    "SongstatsStats": (".songstats_client", "SongstatsStats"),
 }
 
 
@@ -56,5 +59,8 @@ __all__ = [
     "EmotionalAnalysis",
     "SpotifyClient",
     "SpotifyError",
+    "SongstatsClient",
+    "SongstatsError",
+    "SongstatsStats",
     "__version__",
 ]

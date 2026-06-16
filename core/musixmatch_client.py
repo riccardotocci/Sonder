@@ -196,6 +196,23 @@ class MusixmatchClient:
         body = self._request("track.richsync.get", track_id=track_id)
         return self._parse_richsync(body)
 
+    def get_lyrics_translation(self, track_id: int, language: str) -> Lyrics:
+        """Recupera la traduzione del testo nella lingua richiesta (codice ISO 2 lettere).
+
+        Usa l'endpoint ``track.lyrics.translation.get``. Se la traduzione non e'
+        disponibile o l'endpoint non e' accessibile per il piano corrente, viene
+        sollevato ``MusixmatchError`` (gestito dai chiamanti con un fallback vuoto).
+        """
+        language = (language or "").strip().lower()
+        if not language:
+            return Lyrics(body="")
+        body = self._request(
+            "track.lyrics.translation.get",
+            track_id=track_id,
+            selected_language=language,
+        )
+        return self._parse_translation(body, language)
+
     def match_lyrics(self, track: str, artist: str) -> Lyrics:
         """Recupera il testo combinando titolo + artista (fuzzy matcher)."""
         body = self._request("matcher.lyrics.get", q_track=track, q_artist=artist)
@@ -254,3 +271,40 @@ class MusixmatchClient:
             copyright=(lyrics.get("lyrics_copyright") or "").strip(),
             is_restricted=bool(lyrics.get("restricted", 0)),
         )
+
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _parse_translation(body: dict[str, Any], language: str) -> Lyrics:
+        """Estrae il testo tradotto da una risposta ``track.lyrics.translation.get``.
+
+        Il payload puo' presentarsi in due forme a seconda del piano/endpoint:
+          1. ``translation_list`` con item ``{"translation": {"snippet", "description"}}``
+             dove ``description`` contiene la riga tradotta.
+          2. ``lyrics`` con ``lyrics_body`` gia' tradotto.
+        Si gestiscono entrambe in modo difensivo.
+        """
+        translation_list = body.get("translation_list")
+        if isinstance(translation_list, list) and translation_list:
+            lines: list[str] = []
+            for item in translation_list:
+                if not isinstance(item, dict):
+                    continue
+                translation = item.get("translation") or {}
+                line = (
+                    translation.get("description")
+                    or translation.get("translation")
+                    or ""
+                )
+                if isinstance(line, str) and line.strip():
+                    lines.append(line.strip())
+            return Lyrics(body="\n".join(lines), language=language)
+
+        lyrics = body.get("lyrics") or {}
+        if isinstance(lyrics, dict) and lyrics.get("lyrics_body"):
+            return Lyrics(
+                body=(lyrics.get("lyrics_body") or "").strip(),
+                language=lyrics.get("lyrics_language", language),
+                copyright=(lyrics.get("lyrics_copyright") or "").strip(),
+                is_restricted=bool(lyrics.get("restricted", 0)),
+            )
+        return Lyrics(body="", language=language)

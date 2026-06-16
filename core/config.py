@@ -17,6 +17,26 @@ load_dotenv()
 
 DEFAULT_LLM_MODEL = "openai/gpt-oss-120b:free"
 
+# Soglia di notorieta' minima (task 4): le tracce con un numero di stream/ascolti
+# Songstats inferiore a questo valore vengono escluse dai risultati. Spotify
+# "popularity" e' 0-100 e NON e' un conteggio di riproduzioni, quindi usiamo
+# Songstats (conteggio reale di stream) come metrica di soglia.
+SONGSTATS_MIN_STREAMS = 10_000
+
+# Lingue selezionabili nella barra di ricerca (task 6): etichetta -> codice usato
+# nelle query Musixmatch (coerente con il banco query in storyteller.py).
+SEARCH_LANGUAGE_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("English", "EN"),
+    ("Italiano", "IT"),
+    ("Français", "FR"),
+    ("Español", "ES"),
+    ("Deutsch", "DE"),
+    ("Português", "PT"),
+    ("日本語", "JA"),
+    ("한국어", "KO"),
+    ("中文", "ZH"),
+)
+
 LLM_MODEL_OPTIONS: tuple[tuple[str, str], ...] = (
     ("GPT OSS 120B", DEFAULT_LLM_MODEL),
     ("Gemma", "google/gemma-4-31b-it:free"),
@@ -89,6 +109,10 @@ class Settings:
         default_factory=lambda: _env("SONDER_TTS_MODE", "auto").lower()
     )
 
+    # --- Songstats (statistiche di streaming/popolarita' reali) ---
+    # Ottieni la chiave su https://songstats.com/api (header "apikey").
+    songstats_api_key: str = field(default_factory=lambda: _env("SONGSTATS_API_KEY"))
+
     # --- Spotify ---
     # Solo il Client ID e' richiesto (pubblico) per il flusso PKCE per-utente:
     # ogni visitatore accede col proprio account, senza client secret ne' server.
@@ -130,6 +154,10 @@ class Settings:
         return bool(self.elevenlabs_api_key)
 
     @property
+    def songstats_ready(self) -> bool:
+        return bool(self.songstats_api_key)
+
+    @property
     def spotify_pkce_ready(self) -> bool:
         """Per il flusso per-utente (PKCE) basta il Client ID pubblico."""
         return bool(self.spotify_client_id)
@@ -143,6 +171,7 @@ class Settings:
             "LLM (Thinking)": self.llm_ready,
             "ElevenLabs TTS": self.elevenlabs_ready,
             "Spotify": self.spotify_pkce_ready,
+            "Songstats": self.songstats_ready,
         }
 
 

@@ -80,12 +80,14 @@ Produci la risposta in {language}, in Markdown, con ESATTAMENTE queste sezioni:
 Una riga: `Archetipo: <nome archetipo>` seguita da 4-7 parole chiave emotive separate da virgola.
 
 ### Analisi psicologica
-2-3 paragrafi che decodificano metafore, slang e tensioni interiori, collegando \
-il testo al vissuto dell'artista (se la biografia lo consente).
+4-6 paragrafi APPROFONDITI ed esaustivi che decodificano metafore, slang, simboli e tensioni \
+interiori. Cita o parafrasa versi e immagini CONCRETE del testo (almeno tre riferimenti diretti) e \
+collega ciascuno al sottotesto psicologico. Approfondisci anche l'artista e il contesto \
+storico/culturale del brano usando SOLO la biografia fornita (niente dati inventati).
 
 ### Micro-racconto
-Un breve racconto in seconda o terza persona (120-200 parole) che traduce il \
-"vettore emotivo" del brano in una scena narrativa, in stile nota di copertina."""
+Un racconto in seconda o terza persona (180-260 parole) che traduce il "vettore emotivo" del brano \
+in una scena narrativa densa di immagini, in stile nota di copertina, restando fedele al testo."""
 
 
 CHAT_SYSTEM_PROMPT = """Sei "Empathy for the Devil": critico musicale, poeta e \
@@ -119,15 +121,20 @@ MUSIXMATCH_SEARCH_TEMPLATE = """Prepara query Musixmatch concise. Rispondi SOLO 
 
 Lingua: {language_rule}
 
+Lingue di ricerca consentite (codici): {search_languages}
+- Genera q_lyrics SOLO in queste lingue. Per OGNI query indica il campo "lang" con il codice della
+  sua lingua (uno tra quelli consentiti). NON produrre query in lingue non consentite.
+
 Messaggi:
 {messages}
 
 Regole:
 - Se l'utente cita titolo/artista, usa q_track e q_artist.
 - Per temi crea ESATTAMENTE 20 query incentrate su parole/immagini del tema, NON su emozioni generiche.
+- NOME PROPRIO: se il tema cita un nome proprio (città, monumento, evento storico, persona, luogo, opera, fazione), metti SOLO quel termine esatto e specifico nella query (in q_lyrics, o in q se serve), SENZA inserirlo in una frase, perifrasi o descrizione. Esempi: tema "la caduta del muro di Berlino" -> q_lyrics "Berlino" oppure "Berlin"; tema "Cernobyl" -> q_lyrics "Chernobyl"; tema "Giovanna d'Arco" -> q_lyrics "Jeanne d'Arc". Una query = un solo termine proprio.
 - Per qualsiasi tema storico, tecnico, geografico, sociale o politico alza il livello di precisione: usa lessico documentario e materiale, non formule vaghe. Esempi: trincea, fronte, soldati, partigiani, resistenza, armistizio, bombardamenti, barricate, esilio, prigionieri, rivoluzione, embargo, propaganda, confine, occupazione.
 - Se l'utente cita un contesto come luogo, evento, periodo, movimento o fazione, usalo per scegliere parole tecniche coerenti, ma non trasformare ogni query in una formula rigida o identica.
-- Le query devono coprire lingue europee e asiatiche (EN, IT, FR, ES, DE, PT, JA, KO, ZH; non usare hindi), ma ogni singola q_lyrics deve essere in una sola lingua.
+- Ogni singola q_lyrics deve essere in UNA sola lingua, tra quelle consentite.
 - Metti in q_lyrics frasi brevi e leggibili. Gli esempi sarcastici/allusivi (ghost of you, empty bed, thanks for nothing, grazie di niente, gracias por nada) valgono solo per temi personali, non per temi storici o tecnici.
 - Per richieste tematiche generiche lascia q vuoto: NON suggerire generi, stili, strumenti, tempo o estetiche sonore.
 - Usa q solo per vincoli espliciti di genere, lingua o periodo; non usare q per stati d'animo.
@@ -148,6 +155,7 @@ Schema:
       "q_track": "",
       "q_artist": "",
       "q_lyrics": "",
+      "lang": "EN",
             "reason": ""
     }}
   ]
@@ -168,17 +176,31 @@ Parafrasa, non copiare versi lunghi.
 Se non ci sono risultati, chiedi una richiesta piu' precisa."""
 
 
-STUDIO_BRIEF_TEMPLATE = """Crea una regia audio concisa per: "{title}".
+STUDIO_BRIEF_TEMPLATE = """Sei la voce narrante di uno studio musicale d'autore. Scrivi una regia audio \
+APPROFONDITA ed ESAUSTIVA per: "{title}".
 
 Brani (nell'ordine):
 {tracks}
 
-Per ogni brano scrivi DUE parti separate in {language}:
-- musixmatch_speech: 25-40 parole basate solo sul testo/richsync e sul motivo ricerca.
-- audiodb_speech: 25-40 parole basate su contesto esterno ordinato così: prima notizie specifiche/curiosità sul brano, poi notizie sull'album, poi descrizione dell'artista.
-Non mescolare le fonti. Non inventare.
-Non scrivere mai i nomi delle fonti dentro i testi generati.
-Per audiodb_speech usa il primo livello disponibile nell'ordine indicato; non partire dall'artista se esistono dettagli sul brano o sull'album.
+Per OGNI brano scrivi, in {language}, un campo "speech": un'analisi ricca e densa (160-240 parole) \
+in prosa continua, pensata per essere letta ad alta voce, che intreccia in un unico discorso:
+- TESTO: cita o parafrasa almeno DUE versi o immagini CONCRETE del brano e decodificane il \
+significato poetico, le metafore, lo slang, i simboli e il sottotesto psicologico.
+- ARTISTA e CONTESTO: collega il brano al percorso dell'artista, all'album e al momento \
+storico/culturale, dando priorità prima alle notizie specifiche sul brano, poi sull'album, poi \
+alla descrizione dell'artista.
+- LETTURA PSICOLOGICA: tensioni interiori, archetipo emotivo, e perché questo brano risponde alla \
+richiesta "{title}".
+
+Regole ferree:
+- NON inventare dati biografici, date, luoghi o fatti: usa SOLO il contesto fornito per ciascun \
+brano. Se un'informazione non è presente, non dichiararla e resta sul testo.
+- NON scrivere MAI i nomi delle fonti (Musixmatch, TheAudioDB, Spotify, Last.fm) dentro lo "speech".
+- Cita i versi in forma breve o parafrasata: non copiare lunghe porzioni di testo.
+- "speech" deve essere prosa scorrevole, senza elenchi puntati né intestazioni.
+
+Aggiungi per ogni brano: "mood" (1-3 parole), "origin" (città/paese d'origine dell'artista) e le \
+coordinate decimali "lat"/"lng" di quell'origine.
 
 Rispondi SOLO JSON valido:
 {{
@@ -186,16 +208,15 @@ Rispondi SOLO JSON valido:
     {{
       "title": "...",
       "artist": "...",
-            "musixmatch_speech": "...",
-            "audiodb_speech": "...",
-            "mood": "...",
-            "origin": "...",
+      "speech": "...",
+      "mood": "...",
+      "origin": "...",
       "lat": <latitudine decimale dell'origine>,
       "lng": <longitudine decimale dell'origine>
     }}
   ],
-    "summary": "...",
-    "moods": ["..."]
+  "summary": "<2-3 frasi in {language} che legano i brani al tema>",
+  "moods": ["..."]
 }}
 L'array "narrations" deve avere ESATTAMENTE {n} elementi, nello stesso ordine dei brani."""
 
@@ -573,12 +594,18 @@ THEME_QUERY_CLUSTER_ORDER = (
 )
 
 
-def _theme_queries_for_text(text: str) -> list[dict[str, str]]:
+def _theme_queries_for_text(
+    text: str, allowed_langs: Optional[set[str]] = None
+) -> list[dict[str, str]]:
     normalized = text.casefold()
     queries: list[dict[str, str]] = []
     for triggers, bank in THEME_QUERY_BANK:
         if any(trigger in normalized for trigger in triggers):
             queries.extend(dict(item) for item in bank)
+    # Task 6: limita le query del banco alle sole lingue selezionate (se indicate).
+    if allowed_langs:
+        allowed_upper = {code.upper() for code in allowed_langs}
+        queries = [q for q in queries if str(q.get("lang", "")).upper() in allowed_upper]
     cluster_order: list[str] = []
     for query in queries:
         cluster = str(query.get("cluster", "")).lower()
@@ -762,19 +789,20 @@ class Storyteller:
             bio = (t.get("_bio") or t.get("bio") or "").strip()
             lyrics = (t.get("lyrics") or "").strip()
             if lyrics:
-                lyrics_short = lyrics[:180] + ("…" if len(lyrics) > 180 else "")
+                # Testo piu' ampio cosi' il modello puo' citare versi/immagini concrete.
+                lyrics_short = lyrics[:900] + ("…" if len(lyrics) > 900 else "")
                 line += f'\n   Musixmatch testo: {lyrics_short}'
             song_news = (t.get("audio_db_song_news") or "").strip()
             album_news = (t.get("audio_db_album_news") or "").strip()
             artist_description = (t.get("audio_db_artist_description") or bio).strip()
             if song_news:
-                song_short = song_news[:260] + ("…" if len(song_news) > 260 else "")
+                song_short = song_news[:420] + ("…" if len(song_news) > 420 else "")
                 line += f'\n   Contesto esterno 1 - brano: {song_short}'
             if album_news:
-                album_short = album_news[:220] + ("…" if len(album_news) > 220 else "")
+                album_short = album_news[:360] + ("…" if len(album_news) > 360 else "")
                 line += f'\n   Contesto esterno 2 - album: {album_short}'
             if artist_description:
-                artist_short = artist_description[:180] + ("…" if len(artist_description) > 180 else "")
+                artist_short = artist_description[:360] + ("…" if len(artist_description) > 360 else "")
                 line += f'\n   Contesto esterno 3 - artista: {artist_short}'
             audiodb_text = (t.get("audio_db_text") or t.get("audiodb_text") or "").strip()
             if audiodb_text and not (song_news or album_news or artist_description):
@@ -797,12 +825,69 @@ class Storyteller:
         )
         return self._parse_json(content)
 
+    def suggest_listening_themes(
+        self,
+        *,
+        artists: list[str],
+        tracks: list[str],
+        genres: list[str],
+        language: str = "Italiano",
+        n: int = 4,
+    ) -> list[str]:
+        """Deriva temi narrativi brevi dagli ascolti reali dell'utente (task 10).
+
+        Restituisce una lista di stringhe-tema (in {language}); lista vuota in caso
+        di errore o input insufficiente. Non inventa: si basa solo sui dati passati.
+        """
+        if not (artists or tracks or genres):
+            return []
+        listening = {
+            "top_artists": artists[:15],
+            "top_tracks": tracks[:15],
+            "top_genres": genres[:15],
+        }
+        lang_rule = (
+            "Riconosci la lingua dell'utente dai dati e usa quella"
+            if language == "Auto"
+            else f"Scrivi i temi in {language}"
+        )
+        user = (
+            "Questi sono gli ascolti reali dell'utente su Spotify (artisti, brani, generi):\n"
+            f"{json.dumps(listening, ensure_ascii=False, indent=2)}\n\n"
+            f"Proponi {n} TEMI NARRATIVI brevi (3-7 parole ciascuno) per esplorare nuova musica "
+            "coerente con questi gusti: atmosfere, immagini, stati d'animo o contesti, NON nomi di "
+            "artisti o brani già ascoltati. Evita generi puri e parole come 'playlist'. "
+            f"{lang_rule}.\n"
+            'Rispondi SOLO con un array JSON di stringhe, es: ["...", "...", "...", "..."]'
+        )
+        try:
+            content, _ = self._chat(
+                system="Sei un curatore musicale. Rispondi esclusivamente con un array JSON di stringhe.",
+                user=user,
+            )
+        except StorytellerError:
+            return []
+        cleaned = re.sub(r"^```(?:json)?", "", content.strip()).strip()
+        cleaned = re.sub(r"```$", "", cleaned).strip()
+        start, end = cleaned.find("["), cleaned.rfind("]")
+        if start != -1 and end != -1 and end > start:
+            cleaned = cleaned[start : end + 1]
+        try:
+            data = json.loads(cleaned)
+        except (ValueError, json.JSONDecodeError):
+            return []
+        if not isinstance(data, list):
+            return []
+        themes = [str(item).strip() for item in data if str(item).strip()]
+        return themes[:n]
+
     def plan_musixmatch_search(
         self,
         *,
         messages: list[dict[str, str]],
         language: str = "Italiano",
         context: str = "",
+        search_languages: Optional[list[str]] = None,
     ) -> dict[str, Any]:
         if language == "Auto":
             language_rule = (
@@ -810,6 +895,15 @@ class Storyteller:
             )
         else:
             language_rule = f"Interpreta la richiesta e rispondi in {language} quando richiesto."
+        # Task 6: lingue in cui cercare i brani (codici EN/IT/FR/...). Default = tutte.
+        allowed_langs = {code.upper() for code in (search_languages or []) if code}
+        all_langs = list(THEME_QUERY_LANGUAGE_ORDER)
+        if allowed_langs:
+            search_languages_text = ", ".join(
+                code for code in all_langs if code in allowed_langs
+            ) or ", ".join(sorted(allowed_langs))
+        else:
+            search_languages_text = ", ".join(all_langs) + " (tutte)"
         recent = messages[-4:]
         last_user = ""
         for message in reversed(messages):
@@ -819,6 +913,7 @@ class Storyteller:
         user = MUSIXMATCH_SEARCH_TEMPLATE.format(
             language_rule=language_rule,
             context=context.strip() or "(nessuno)",
+            search_languages=search_languages_text,
             messages=json.dumps(recent, ensure_ascii=False, indent=2),
         )
         try:
@@ -831,11 +926,13 @@ class Storyteller:
             return self._fallback_musixmatch_plan(
                 last_user,
                 reason=f"LLM router unavailable for {self.model}: {exc}",
+                allowed_langs=allowed_langs or None,
             )
         if not data:
             return self._fallback_musixmatch_plan(
                 last_user,
                 reason=f"LLM router returned non-JSON output for {self.model}.",
+                allowed_langs=allowed_langs or None,
             )
         def as_bool(value: Any, default: bool) -> bool:
             if isinstance(value, bool):
@@ -863,8 +960,18 @@ class Storyteller:
                     "q_track": str(item.get("q_track", "")).strip(),
                     "q_artist": str(item.get("q_artist", "")).strip(),
                     "q_lyrics": str(item.get("q_lyrics", "")).strip(),
+                    "lang": str(item.get("lang", "")).strip().upper(),
                     "reason": str(item.get("reason", "")).strip(),
                 }
+                # Task 6: scarta le query in lingue non consentite (solo se dichiarano
+                # una lingua e non sono ricerche per titolo/artista esplicito).
+                if (
+                    allowed_langs
+                    and query["lang"]
+                    and query["lang"] not in allowed_langs
+                    and not (query["q_track"] or query["q_artist"])
+                ):
+                    continue
                 if any(query[k] for k in ("q", "q_track", "q_artist", "q_lyrics")):
                     queries.append(query)
         has_router_queries = bool(queries)
@@ -872,7 +979,7 @@ class Storyteller:
         if needs_search and not queries and last_user:
             queries.append({"q": last_user, "q_track": "", "q_artist": "", "q_lyrics": "", "reason": ""})
         has_explicit_track = any(query.get("q_track") or query.get("q_artist") for query in queries)
-        theme_queries = _theme_queries_for_text(last_user)
+        theme_queries = _theme_queries_for_text(last_user, allowed_langs or None)
         if theme_queries and not has_explicit_track:
             if has_router_queries:
                 queries = _dedupe_queries(queries + theme_queries)
@@ -888,8 +995,13 @@ class Storyteller:
             "queries": queries[:20],
         }
 
-    def _fallback_musixmatch_plan(self, last_user: str, reason: str = "") -> dict[str, Any]:
-        queries = _theme_queries_for_text(last_user)
+    def _fallback_musixmatch_plan(
+        self,
+        last_user: str,
+        reason: str = "",
+        allowed_langs: Optional[set[str]] = None,
+    ) -> dict[str, Any]:
+        queries = _theme_queries_for_text(last_user, allowed_langs or None)
         if not queries and last_user:
             queries = [
                 {

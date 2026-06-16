@@ -9,30 +9,28 @@ e indica quale variabile inserire nel file .env.
 from __future__ import annotations
 
 import base64
+import functools
 import html
 import json
-import logging
-import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 
 import pandas as pd
+import requests
 import streamlit as st
 import streamlit.components.v1 as components
 
-from core.config import LLM_MODEL_OPTIONS, settings
+from core.config import settings, SONGSTATS_MIN_STREAMS, SEARCH_LANGUAGE_OPTIONS
 from core.musixmatch_client import MusixmatchClient, MusixmatchError
 from core.audiodb_client import AudioDBClient, AudioDBError
 from core.lastfm_client import LastFMClient, LastFMError
 from core.storyteller import Storyteller, StorytellerError
 from core.spotify_client import SpotifyClient, SpotifyError
-from core.elevenlabs_client import ElevenLabsClient, ElevenLabsError
-from core.tts_server import TTSServerError, ensure_tts_server
+from core.songstats_client import SongstatsClient, SongstatsError
 from core import spotify_pkce
-
-logger = logging.getLogger("sonder.llm")
+from core import tts_server
 
 # --------------------------------------------------------------------------- #
 # Logo helpers
@@ -71,175 +69,6 @@ def _stay_logged_store() -> dict[str, bool]:
     """Mappa state -> stay_logged; sopravvive al redirect OAuth verso Spotify."""
     return {}
 
-
-def _tts_mode() -> str:
-    """Return the configured ElevenLabs delivery mode."""
-    return str(getattr(settings, "sonder_tts_mode", "auto") or "auto").strip().lower()
-
-
-def _tts_disabled() -> bool:
-    return _tts_mode() in {"off", "disabled", "none", "false", "0"}
-
-
-def _streamlit_cloud_url_configured() -> bool:
-    urls = [settings.spotify_redirect_uri]
-    try:
-        context_url = str(getattr(getattr(st, "context", None), "url", "") or "")
-    except Exception:
-        context_url = ""
-    if context_url:
-        urls.append(context_url)
-
-    for raw_url in urls:
-        try:
-            hostname = urlparse(raw_url).hostname or ""
-        except Exception:
-            hostname = ""
-        if hostname == "streamlit.app" or hostname.endswith(".streamlit.app"):
-            return True
-    return False
-
-
-def _use_embedded_tts() -> bool:
-    """Use base64 audio in hosted Streamlit, local loopback in dev."""
-    mode = _tts_mode()
-    if mode in {"embedded", "embed", "base64", "cloud", "streamlit"}:
-        return True
-    if mode in {"local", "server", "loopback"}:
-        return False
-    return _streamlit_cloud_url_configured()
-
-
-def _tts_delivery_label() -> str:
-    if _tts_disabled():
-        return "off"
-    return "embedded" if _use_embedded_tts() else "local"
-
-
-def _track_narration_text(track: dict) -> str:
-    primary_text = str(track.get("speech", "") or "").strip()
-    fallback_text = " ".join(
-        str(track.get(key, "") or "").strip()
-        for key in ("musixmatch_speech", "audiodb_speech")
-        if str(track.get(key, "") or "").strip()
-    ).strip()
-    return (primary_text or fallback_text)[:3500]
-
-
-@st.cache_data(show_spinner=False)
-def _elevenlabs_audio_b64(
-    text: str,
-    voice_id: str,
-    model_id: str,
-    output_format: str,
-) -> str:
-    audio = ElevenLabsClient().text_to_speech(
-        text,
-        voice_id=voice_id,
-        model_id=model_id,
-        output_format=output_format,
-    )
-    return base64.b64encode(audio).decode("ascii")
-
-
-def _ensure_track_elevenlabs_audio(track: dict) -> bool:
-    """Populate audio_b64 for one track when Play is requested."""
-    if track.get("audio_b64"):
-        return True
-    text = _track_narration_text(track)
-    if not text:
-        return False
-    voice_id = settings.elevenlabs_voice_id or ElevenLabsClient.DEFAULT_VOICE
-    track["audio_b64"] = _elevenlabs_audio_b64(
-        text,
-        voice_id,
-        ElevenLabsClient.DEFAULT_MODEL,
-        ElevenLabsClient.DEFAULT_OUTPUT_FORMAT,
-    )
-    return True
-
-
-def _query_param_value(name: str, default: str = "") -> str:
-    value = st.query_params.get(name, default)
-    if isinstance(value, list):
-        value = value[0] if value else default
-    return str(value or default)
-
-
-def _clear_tts_query_params() -> None:
-    for key in (
-        "sonder_tts_track",
-        "sonder_tts_seq",
-        "sonder_tts_order",
-        "sonder_tts_pos",
-        "sonder_tts_nonce",
-    ):
-        if key in st.query_params:
-            del st.query_params[key]
-
-
-def _parse_tts_order(raw_order: str, track_count: int) -> list[int]:
-    order: list[int] = []
-    for raw_item in raw_order.split(","):
-        try:
-            index = int(raw_item)
-        except ValueError:
-            continue
-        if 0 <= index < track_count and index not in order:
-            order.append(index)
-    return order
-
-
-def handle_embedded_tts_request(studio: dict) -> None:
-    """Generate one embedded ElevenLabs audio clip requested by the iframe."""
-    raw_index = _query_param_value("sonder_tts_track")
-    if not raw_index:
-        return
-    tracks = studio.get("tracks") or []
-    try:
-        index = int(raw_index)
-    except ValueError:
-        _clear_tts_query_params()
-        st.rerun()
-    if not (0 <= index < len(tracks)):
-        _clear_tts_query_params()
-        st.rerun()
-
-    seq = _query_param_value("sonder_tts_seq") == "1"
-    order = _parse_tts_order(_query_param_value("sonder_tts_order"), len(tracks))
-    if not order:
-        order = list(range(len(tracks)))
-    try:
-        pos = int(_query_param_value("sonder_tts_pos", "0"))
-    except ValueError:
-        pos = 0
-
-    audio_ready = bool(0 <= index < len(tracks) and tracks[index].get("audio_b64"))
-    if getattr(settings, "elevenlabs_ready", False) and _use_embedded_tts() and not _tts_disabled():
-        with st.spinner("Generating ElevenLabs narration audio..."):
-            try:
-                audio_ready = _ensure_track_elevenlabs_audio(tracks[index])
-                if not audio_ready:
-                    title = str(tracks[index].get("title", f"track {index + 1}") or f"track {index + 1}")
-                    studio.setdefault("llm_log", []).append(
-                        {"step": "ElevenLabs TTS", "detail": f"Narration text missing for {title}."}
-                    )
-            except ElevenLabsError as exc:
-                title = str(tracks[index].get("title", f"track {index + 1}") or f"track {index + 1}")
-                studio.setdefault("llm_log", []).append(
-                    {"step": "ElevenLabs TTS", "detail": f"Audio generation failed for {title}: {exc}"}
-                )
-
-    if audio_ready:
-        st.session_state["_sonder_tts_autoplay"] = {
-            "index": index,
-            "seq": seq,
-            "order": order,
-            "pos": max(0, min(pos, max(len(order) - 1, 0))),
-        }
-    _clear_tts_query_params()
-    st.rerun()
-
 # Lingua UI -> (nome per il prompt LLM, codice biografia TheAudioDB)
 # "🌐 Auto" => il modello riconosce automaticamente la lingua dell'utente.
 LANGUAGES: dict[str, tuple[str, str]] = {
@@ -258,6 +87,64 @@ LANGUAGES: dict[str, tuple[str, str]] = {
     "한국어": ("한국어", "KR"),
     "العربية": ("العربية", "AR"),
 }
+
+# Lingua di narrazione -> codice BCP-47 per la sintesi vocale del browser (Web Speech API).
+TTS_LANG: dict[str, str] = {
+    "Auto": "",
+    "Italiano": "it-IT",
+    "English": "en-US",
+    "Français": "fr-FR",
+    "Español": "es-ES",
+    "Deutsch": "de-DE",
+    "Português": "pt-PT",
+    "Nederlands": "nl-NL",
+    "Polski": "pl-PL",
+    "Русский": "ru-RU",
+    "日本語": "ja-JP",
+    "中文": "zh-CN",
+    "한국어": "ko-KR",
+    "العربية": "ar-SA",
+}
+
+MUSIXMATCH_TRANSLATION_LANG: dict[str, str] = {
+    "Auto": "en",
+    "Italiano": "it",
+    "English": "en",
+    "Français": "fr",
+    "Español": "es",
+    "Deutsch": "de",
+    "Português": "pt",
+    "Nederlands": "nl",
+    "Polski": "pl",
+    "Русский": "ru",
+    "日本語": "ja",
+    "中文": "zh",
+    "한국어": "ko",
+    "العربية": "ar",
+}
+
+MUSIXMATCH_TRANSLATION_LANG_BY_CODE: dict[str, str] = {
+    "EN": "en",
+    "IT": "it",
+    "FR": "fr",
+    "ES": "es",
+    "DE": "de",
+    "PT": "pt",
+    "NL": "nl",
+    "PL": "pl",
+    "RU": "ru",
+    "JP": "ja",
+    "CN": "zh",
+    "KR": "ko",
+    "AR": "ar",
+}
+
+
+def musixmatch_translation_code(lang_name: str = "Auto", lang_code: str = "EN") -> str:
+    return (
+        MUSIXMATCH_TRANSLATION_LANG.get(lang_name)
+        or MUSIXMATCH_TRANSLATION_LANG_BY_CODE.get(lang_code.upper(), "en")
+    )
 
 # Saluto iniziale della chat per ciascuna lingua (per "Auto" usiamo un saluto bilingue).
 GREETINGS: dict[str, str] = {
@@ -309,8 +196,6 @@ LLM_RETRY_ERROR_HINTS = (
     "429",
     "quota",
 )
-
-LLM_MODEL_LABELS = {value: label for label, value in LLM_MODEL_OPTIONS}
 
 # Palette neon "studio tecnologico", ciclata per indice su pill e card.
 PALETTE = ["#ff2d78", "#f97316", "#22d3ee", "#facc15", "#c2410c", "#34d399"]
@@ -621,6 +506,21 @@ CUSTOM_CSS = """
         box-shadow: 0 0 0 2px rgba(255,45,120,.2) !important;
     }
 
+    /* Barra di input principale: stile simile alla chat bar */
+    div[data-testid="stTextInput"] input {
+        border-radius: 14px !important;
+        border: 1px solid rgba(249,115,22,.35) !important;
+        background: rgba(20,16,36,.85) !important;
+        color: #e8e6f5 !important;
+        font-size: 1rem !important;
+        padding: 0.65rem 1rem !important;
+        box-shadow: 0 0 18px rgba(249,115,22,.12) !important;
+    }
+    div[data-testid="stTextInput"] input:focus {
+        border-color: #f97316 !important;
+        box-shadow: 0 0 28px rgba(249,115,22,.25) !important;
+    }
+
     /* Barra chat scura */
     div[data-testid="stChatInput"] {
         border-radius: 14px;
@@ -672,292 +572,11 @@ def render_status_sidebar() -> None:
     st.sidebar.markdown("---")
 
 
-def reset_llm_log() -> None:
-    st.session_state["llm_log"] = []
-
-
-def add_llm_log(step: str, detail: str = "") -> None:
-    entries = st.session_state.setdefault("llm_log", [])
-    entries.append({"step": step, "detail": detail})
-    logger.info("LLM step: %s%s", step, f" | {detail}" if detail else "")
-
-
-def current_llm_log() -> list[dict[str, str]]:
-    return list(st.session_state.get("llm_log") or [])
-
-
-def llm_model_values() -> list[str]:
-    values = [value for _, value in LLM_MODEL_OPTIONS]
-    if settings.llm_model and settings.llm_model not in values:
-        values.insert(0, settings.llm_model)
-    return values
-
-
-def selected_llm_model() -> str:
-    values = llm_model_values()
-    selected = st.session_state.get("llm_model") or settings.llm_model
-    if selected not in values:
-        selected = values[0] if values else settings.llm_model
-    st.session_state["llm_model"] = selected
-    return selected
-
-
-def storyteller_for_session() -> Storyteller:
-    return Storyteller(model=selected_llm_model())
-
-
-def render_llm_model_selector() -> None:
-    values = llm_model_values()
-    if not values:
-        return
-    selected = selected_llm_model()
-    label_map = dict(LLM_MODEL_LABELS)
-    if settings.llm_model and settings.llm_model not in label_map:
-        label_map[settings.llm_model] = "Configured in .env"
-    index = values.index(selected) if selected in values else 0
-    with st.sidebar.expander("🧠 LLM model", expanded=False):
-        chosen = st.selectbox(
-            "Model",
-            values,
-            index=index,
-            format_func=lambda value: label_map.get(value, value),
-            key="llm_model_selectbox",
-        )
-        st.session_state["llm_model"] = chosen
-        st.caption(f"Using `{chosen}` for the next LLM calls.")
-
-
-def render_llm_log(entries: list[dict[str, str]] | None = None) -> None:
-    logs = entries if entries is not None else current_llm_log()
-    if not logs:
-        return
-    with st.expander("LLM execution log", expanded=False):
-        for index, item in enumerate(logs, start=1):
-            step = html.escape(str(item.get("step", "Step")))
-            detail = html.escape(str(item.get("detail", ""))).replace("\n", "<br>")
-            body = f"<b>{index}. {step}</b>"
-            if detail:
-                body += f"<br><span style=\"color:#8f8aa8;\">{detail}</span>"
-            st.markdown(body, unsafe_allow_html=True)
-
-
 # --------------------------------------------------------------------------- #
 # Tool musicali (contesto + playlist)
 # --------------------------------------------------------------------------- #
-def fetch_audiodb_track_text(
-    client: AudioDBClient,
-    *,
-    artist: str,
-    title: str = "",
-    album: str = "",
-    lang_code: str = "EN",
-) -> str:
-    """Recupera contesto TheAudioDB anche con versioni vecchie del client."""
-    def clean(text: str, limit: int = 360) -> str:
-        text = " ".join((text or "").split())
-        if len(text) <= limit:
-            return text
-        return text[:limit].rsplit(" ", 1)[0].rstrip(".,;:") + "..."
-
-    def unique(values: list[str]) -> list[str]:
-        seen: set[str] = set()
-        result: list[str] = []
-        for value in values:
-            normalized = " ".join((value or "").split()).strip(" -–—")
-            key = normalized.casefold()
-            if normalized and key not in seen:
-                seen.add(key)
-                result.append(normalized)
-        return result
-
-    def artist_variants(value: str) -> list[str]:
-        base = " ".join((value or "").split())
-        stripped = re.split(r"\s+(?:feat\.?|ft\.?|featuring)\s+", base, maxsplit=1, flags=re.IGNORECASE)[0]
-        return unique([base, stripped])
-
-    def title_variants(value: str) -> list[str]:
-        base = " ".join((value or "").split())
-        no_brackets = re.sub(r"\s*[\(\[].*?[\)\]]", "", base).strip()
-        no_dash_suffix = re.sub(
-            r"\s+[-–—]\s+(?:remaster(?:ed)?|live|radio edit|single version|album version|explicit|clean|mono|stereo).*$",
-            "",
-            base,
-            flags=re.IGNORECASE,
-        ).strip()
-        return unique([base, no_brackets, no_dash_suffix])
-
-    def first_present(data: dict[str, Any], fields: tuple[str, ...]) -> str:
-        for field_name in fields:
-            value = (data.get(field_name) or "").strip()
-            if value:
-                return value
-        return ""
-
-    def localized_description(data: dict[str, Any]) -> str:
-        lang = lang_code.upper()
-        fields = (
-            f"strDescription{lang}",
-            "strDescriptionEN",
-            "strDescriptionIT",
-            "strDescriptionES",
-            "strDescriptionFR",
-            "strDescriptionDE",
-            "strDescriptionPT",
-            "strDescriptionNL",
-            "strDescriptionRU",
-            "strDescriptionJP",
-        )
-        return first_present(data, fields)
-
-    sections = fetch_audiodb_ordered_context(
-        client,
-        artist=artist,
-        title=title,
-        album=album,
-        lang_code=lang_code,
-    )
-    if sections.get("combined"):
-        return clean(sections["combined"], 900)
-
-    get_track_text = getattr(client, "get_track_text", None)
-    if callable(get_track_text):
-        try:
-            text = get_track_text(
-                artist=artist,
-                title=title,
-                album=album,
-                language=lang_code,
-            )
-        except TypeError:
-            text = get_track_text(
-                artist=artist,
-                title=title,
-                language=lang_code,
-            )
-        if text:
-            return clean(text)
-
-    track = None
-    for artist_candidate in artist_variants(artist):
-        for title_candidate in title_variants(title):
-            track = client.search_track(artist_candidate, title_candidate)
-            if track:
-                break
-        if track:
-            break
-    if track:
-        lyrics = first_present(
-            track,
-            ("strTrackLyrics", "strLyrics", "strLyric", "strTrackLyric"),
-        )
-        if lyrics:
-            return clean(lyrics)
-        description = localized_description(track)
-        if description:
-            return clean(description)
-        pieces = []
-        if track.get("strMood"):
-            pieces.append(f"mood: {track['strMood']}")
-        if track.get("strTheme"):
-            pieces.append(f"theme: {track['strTheme']}")
-        if track.get("strGenre"):
-            pieces.append(f"genre: {track['strGenre']}")
-        if track.get("strAlbum"):
-            pieces.append(f"album: {track['strAlbum']}")
-        if pieces:
-            return clean("TheAudioDB associa il brano a " + ", ".join(pieces) + ".")
-
-    album_data = None
-    for artist_candidate in artist_variants(artist):
-        album_data = client.search_album(artist_candidate, album) if album.strip() else None
-        if album_data:
-            break
-    if album_data:
-        description = localized_description(album_data)
-        if description:
-            return clean(description)
-
-    return fetch_audiodb_music_fact(
-        client,
-        artist=artist,
-        title=title,
-        album=album,
-        lang_code=lang_code,
-    )
-
-
-def fetch_audiodb_ordered_context(
-    client: AudioDBClient,
-    *,
-    artist: str,
-    title: str = "",
-    album: str = "",
-    lang_code: str = "EN",
-) -> dict[str, str]:
-    """Recupera sezioni AudioDB se supportate dal client installato."""
-    empty = {
-        "song_news": "",
-        "album_news": "",
-        "artist_description": "",
-        "combined": "",
-    }
-    get_ordered_context = getattr(client, "get_ordered_context", None)
-    if not callable(get_ordered_context):
-        return empty
-
-    try:
-        sections = get_ordered_context(
-            artist=artist,
-            title=title,
-            album=album,
-            language=lang_code,
-        )
-    except TypeError:
-        sections = get_ordered_context(
-            artist=artist,
-            title=title,
-            language=lang_code,
-        )
-    if not isinstance(sections, dict):
-        return empty
-
-    return {
-        key: str(sections.get(key) or "").strip()
-        for key in empty
-    }
-
-
-def fetch_audiodb_music_fact(
-    client: AudioDBClient,
-    *,
-    artist: str,
-    title: str = "",
-    album: str = "",
-    lang_code: str = "EN",
-) -> str:
-    """Recupera una curiosita' AudioDB se supportata dal client installato."""
-    get_music_fact = getattr(client, "get_music_fact", None)
-    if not callable(get_music_fact):
-        return ""
-
-    try:
-        fact = get_music_fact(
-            artist=artist,
-            title=title,
-            album=album,
-            language=lang_code,
-        )
-    except TypeError:
-        fact = get_music_fact(
-            artist=artist,
-            title=title,
-            language=lang_code,
-        )
-    return str(fact or "").strip()
-
-
 def fetch_song_context(title: str, artist: str, lang_code: str) -> tuple[str, list[str]]:
-    """Recupera testo (Musixmatch) e contesto TheAudioDB per la chat."""
+    """Recupera testo (Musixmatch) e biografia (TheAudioDB) come contesto per la chat."""
     parts: list[str] = []
     notes: list[str] = []
 
@@ -967,15 +586,20 @@ def fetch_song_context(title: str, artist: str, lang_code: str) -> tuple[str, li
             matches = mx_client.search_tracks(track=title, artist=artist, has_lyrics=True, limit=1)
             if matches:
                 track = matches[0]
-                lyrics_text, richsync_body = fetch_musixmatch_text(
+                lyrics_text, richsync_body, translated_text = fetch_musixmatch_text(
                     mx_client,
                     track.track_id,
                     track.has_lyrics,
                     track.has_richsync,
+                    translation_lang=MUSIXMATCH_TRANSLATION_LANG_BY_CODE.get(
+                        lang_code.upper(), "en"
+                    ),
                 )
                 parts.append(f"Brano: «{track.track_name or title}» di {track.artist_name or artist or 'artista sconosciuto'}")
                 if richsync_body:
                     parts.append("Richsync word-level (Musixmatch): disponibile")
+                if translated_text:
+                    parts.append("Traduzione testo (Musixmatch):\n" + translated_text)
                 if lyrics_text:
                     parts.append("Testo (Musixmatch):\n" + lyrics_text)
             else:
@@ -988,16 +612,7 @@ def fetch_song_context(title: str, artist: str, lang_code: str) -> tuple[str, li
     bio = ""
     if artist and settings.audiodb_ready:
         try:
-            adb_client = AudioDBClient()
-            audiodb_text = fetch_audiodb_track_text(
-                adb_client,
-                artist=artist,
-                title=title,
-                lang_code=lang_code,
-            )
-            if audiodb_text:
-                parts.append(f"Testo/contesto brano (TheAudioDB):\n{audiodb_text}")
-            artist_obj = adb_client.get_artist(artist)
+            artist_obj = AudioDBClient().get_artist(artist)
             if artist_obj:
                 bio = artist_obj.biography(lang_code)
                 if bio:
@@ -1028,27 +643,6 @@ def render_track_cards(tracks: list[dict[str, str]]) -> None:
         )
 
 
-def fallback_track_response(prompt: str, tracks: list[dict[str, Any]], language: str) -> str:
-    if not tracks:
-        return "Non ho trovato risultati solidi. Prova con un tema, un artista o una lingua piu' precisa."
-
-    intro = "Ecco una selezione essenziale basata sui risultati trovati:" if language == "Italiano" else "Here is a concise selection from the results found:"
-    lines = [intro]
-    for t in tracks:
-        title = str(t.get("title", "")).strip() or "Untitled"
-        artist = str(t.get("artist", "")).strip() or "Unknown artist"
-        reason = str(t.get("reason", "")).strip()
-        audiodb_text = str(t.get("audio_db_text") or t.get("audio_db_fact") or "").strip()
-        lyrics = str(t.get("lyrics", "")).strip()
-        source = audiodb_text or lyrics or reason
-        source = " ".join(source.split())
-        if len(source) > 180:
-            source = source[:180].rsplit(" ", 1)[0].rstrip(".,;:") + "..."
-        detail = source or reason or prompt
-        lines.append(f'- **{artist} - {title}**: {detail}')
-    return "\n".join(lines)
-
-
 def user_facing_llm_error(exc: Exception) -> str:
     raw = str(exc).lower()
     if any(hint in raw for hint in LLM_RETRY_ERROR_HINTS):
@@ -1061,8 +655,10 @@ def fetch_musixmatch_text(
     track_id: int,
     has_lyrics: bool,
     has_richsync: bool,
-) -> tuple[str, list[dict[str, Any]]]:
+    translation_lang: str = "",
+) -> tuple[str, list[dict[str, Any]], str]:
     lyrics_text = ""
+    translated_text = ""
     richsync_body: list[dict[str, Any]] = []
     if has_richsync:
         try:
@@ -1078,19 +674,29 @@ def fetch_musixmatch_text(
             lyrics_text = lyrics.body if lyrics and not lyrics.is_empty else ""
         except MusixmatchError:
             lyrics_text = ""
-    return lyrics_text, richsync_body
+    if translation_lang:
+        try:
+            translation = mx_client.get_lyrics_translation(track_id, translation_lang)
+            translated_text = (
+                translation.body if translation and not translation.is_empty else ""
+            )
+        except MusixmatchError:
+            translated_text = ""
+    return lyrics_text, richsync_body, translated_text
 
 
 def musixmatch_track_payload(
     mx_client: MusixmatchClient,
     track: Any,
     reason: str = "",
+    translation_lang: str = "",
 ) -> dict[str, Any]:
-    lyrics_text, richsync_body = fetch_musixmatch_text(
+    lyrics_text, richsync_body, translated_text = fetch_musixmatch_text(
         mx_client,
         track.track_id,
         track.has_lyrics,
         track.has_richsync,
+        translation_lang=translation_lang,
     )
     return {
         "title": track.track_name,
@@ -1099,26 +705,109 @@ def musixmatch_track_payload(
         "track_id": str(track.track_id),
         "reason": reason,
         "lyrics": lyrics_text,
+        "translated_lyrics": translated_text,
+        "translation_lang": translation_lang,
         "richsync": richsync_body,
         "has_lyrics": track.has_lyrics,
         "has_richsync": track.has_richsync,
-        "audio_db_text": "",
-        "audio_db_fact": "",
     }
 
 
-def strip_narration_source_label(text: str) -> str:
-    return re.sub(r"^\s*(?:\*\*)?\s*(?:musixmatch|theaudiodb|audio\s*db)\s*(?:\*\*)?\s*[:\-–—]?\s*", "", text or "", flags=re.IGNORECASE).strip()
+# --------------------------------------------------------------------------- #
+# Songstats (statistiche reali + soglia di notorieta')
+# --------------------------------------------------------------------------- #
+@functools.lru_cache(maxsize=512)
+def _songstats_track_stats(title: str, artist: str) -> dict[str, Any] | None:
+    """Lookup Songstats per traccia, in cache di processo (thread-safe).
+
+    Restituisce un dict semplice (o ``None``) cosi' da poter essere usato sia nel
+    filtro di popolarita' sia nei grafici. NON usa ``st.cache_data`` perche' viene
+    invocato anche da thread di lavoro privi del contesto Streamlit.
+    """
+    if not settings.songstats_ready or not (title or artist):
+        return None
+    try:
+        stats = SongstatsClient().track_stats(title, artist)
+    except (SongstatsError, Exception):  # noqa: BLE001 - mai propagare verso la UI
+        return None
+    if not stats or stats.is_empty:
+        return None
+    return {
+        "name": stats.name,
+        "subtitle": stats.subtitle,
+        "avatar": stats.avatar,
+        "sources": stats.sources,
+        "total_streams": stats.total_streams,
+        "headline": stats.headline_metrics(),
+    }
 
 
-def compact_text(text: str, limit: int = 360) -> str:
-    text = " ".join((text or "").split())
-    if len(text) <= limit:
-        return text
-    return text[:limit].rsplit(" ", 1)[0].rstrip(".,;:") + "..."
+@functools.lru_cache(maxsize=256)
+def _songstats_artist_stats(name: str) -> dict[str, Any] | None:
+    """Lookup Songstats per artista, in cache di processo."""
+    if not settings.songstats_ready or not name:
+        return None
+    try:
+        stats = SongstatsClient().artist_stats(name)
+    except (SongstatsError, Exception):  # noqa: BLE001
+        return None
+    if not stats or stats.is_empty:
+        return None
+    return {
+        "name": stats.name,
+        "subtitle": stats.subtitle,
+        "avatar": stats.avatar,
+        "sources": stats.sources,
+        "total_streams": stats.total_streams,
+        "headline": stats.headline_metrics(),
+    }
 
 
-def search_musixmatch_from_plan(plan: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
+def apply_popularity_floor(
+    tracks: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Esclude i brani poco noti sotto la soglia Songstats (task 4).
+
+    - Le tracce per cui Songstats non restituisce stream (o non e' configurato) vengono
+      MANTENUTE (beneficio del dubbio), per non svuotare i risultati.
+    - I lookup avvengono in parallelo. Le statistiche trovate vengono allegate alla
+      traccia (chiave ``songstats``) per riuso nei grafici, evitando doppie chiamate.
+    """
+    notes: list[str] = []
+    if not settings.songstats_ready or not tracks:
+        return tracks, notes
+
+    def lookup(t: dict[str, Any]) -> dict[str, Any] | None:
+        return _songstats_track_stats(t.get("title", ""), t.get("artist", ""))
+
+    with ThreadPoolExecutor(max_workers=min(8, len(tracks))) as executor:
+        stats_list = list(executor.map(lookup, tracks))
+
+    kept: list[dict[str, Any]] = []
+    dropped = 0
+    for track, stats in zip(tracks, stats_list):
+        if stats:
+            track["songstats"] = stats
+            streams = int(stats.get("total_streams", 0) or 0)
+            if streams and streams < SONGSTATS_MIN_STREAMS:
+                dropped += 1
+                continue
+        kept.append(track)
+    if dropped:
+        notes.append(
+            f"Songstats: {dropped} brano/i poco noto/i nascosto/i "
+            f"(sotto {SONGSTATS_MIN_STREAMS:,} stream)."
+        )
+    # Sicurezza: non restituire mai una lista vuota se c'erano risultati.
+    if not kept and tracks:
+        return tracks, notes
+    return kept, notes
+
+
+def search_musixmatch_from_plan(
+    plan: dict[str, Any],
+    lang_name: str,
+) -> tuple[list[dict[str, Any]], list[str]]:
     if not settings.musixmatch_ready:
         return [], ["Musixmatch not configured: set `MUSIXMATCH_API_KEY` or `MXM_KEY`."]
 
@@ -1126,17 +815,21 @@ def search_musixmatch_from_plan(plan: dict[str, Any]) -> tuple[list[dict[str, An
     results: list[dict[str, Any]] = []
     seen: set[int] = set()
     mx_client = MusixmatchClient()
+    translation_lang = MUSIXMATCH_TRANSLATION_LANG.get(lang_name, "en")
     try:
-        limit = int(plan.get("limit", 10))
+        limit = int(plan.get("limit", 8))
     except (TypeError, ValueError):
-        limit = 10
-    limit = max(1, min(limit, 10))
+        limit = 8
+    limit = max(1, min(limit, 8))
 
     queries = plan.get("queries") or []
     if not isinstance(queries, list):
         queries = []
+
+    # 1) Raccogli i match unici (in ordine) senza ancora scaricare testi/richsync.
+    collected: list[tuple[Any, str]] = []  # (Track, reason)
     for query in queries:
-        if len(results) >= limit or not isinstance(query, dict):
+        if len(collected) >= limit or not isinstance(query, dict):
             continue
         q = str(query.get("q", "")).strip()
         q_track = str(query.get("q_track", "")).strip()
@@ -1152,7 +845,7 @@ def search_musixmatch_from_plan(plan: dict[str, Any]) -> tuple[list[dict[str, An
                 artist=q_artist or None,
                 lyrics=q_lyrics or None,
                 has_lyrics=True,
-                limit=1,
+                limit=limit - len(collected),
             )
         except MusixmatchError as exc:
             notes.append(f"Musixmatch: {exc}")
@@ -1161,8 +854,28 @@ def search_musixmatch_from_plan(plan: dict[str, Any]) -> tuple[list[dict[str, An
             if match.track_id in seen:
                 continue
             seen.add(match.track_id)
-            results.append(musixmatch_track_payload(mx_client, match, reason=reason))
-            break
+            collected.append((match, reason))
+            if len(collected) >= limit:
+                break
+
+    # 2) Scarica testo/richsync/traduzione in PARALLELO (task 9), preservando l'ordine.
+    #    Un client per worker: evita di condividere la stessa requests.Session tra thread.
+    def build_payload(item: tuple[Any, str]) -> dict[str, Any]:
+        match, reason = item
+        return musixmatch_track_payload(
+            MusixmatchClient(),
+            match,
+            reason=reason,
+            translation_lang=translation_lang,
+        )
+
+    if collected:
+        with ThreadPoolExecutor(max_workers=min(8, len(collected))) as executor:
+            results = list(executor.map(build_payload, collected))
+
+    # 3) Soglia di notorieta' Songstats (task 4): esclude i brani poco noti.
+    results, floor_notes = apply_popularity_floor(results)
+    notes.extend(floor_notes)
     return results, notes
 
 
@@ -1341,71 +1054,7 @@ def render_spotify_login(container) -> None:
 # --------------------------------------------------------------------------- #
 def empty_studio(prompt: str) -> dict:
     """Struttura vuota della regia (usata quando manca l'LLM o non ci sono brani)."""
-    return {
-        "prompt": prompt,
-        "tracks": [],
-        "summary": "",
-        "moods": [],
-        "llm_log": current_llm_log(),
-    }
-
-
-def enrich_tracks_with_audiodb_facts(
-    tracks: list[dict[str, Any]],
-    lang_code: str,
-) -> list[str]:
-    """Aggiunge a ogni brano testo/contesto e curiosita' TheAudioDB best-effort."""
-    if not settings.audiodb_ready:
-        return ["TheAudioDB not configured: text context and curiosities were not fetched."]
-    notes: list[str] = []
-    client = AudioDBClient()
-    for t in tracks:
-        if t.get("audio_db_fact") and t.get("audio_db_text"):
-            continue
-        artist = str(t.get("artist", "")).strip()
-        title = str(t.get("title", "")).strip()
-        album = str(t.get("album", "")).strip()
-        if not artist:
-            continue
-        try:
-            ordered_context = fetch_audiodb_ordered_context(
-                client,
-                artist=artist,
-                title=title,
-                album=album,
-                lang_code=lang_code,
-            )
-            if ordered_context.get("song_news"):
-                t["audio_db_song_news"] = ordered_context["song_news"]
-            if ordered_context.get("album_news"):
-                t["audio_db_album_news"] = ordered_context["album_news"]
-            if ordered_context.get("artist_description"):
-                t["audio_db_artist_description"] = ordered_context["artist_description"]
-            if ordered_context.get("combined"):
-                t["audio_db_text"] = ordered_context["combined"]
-            if title and not t.get("audio_db_text"):
-                text = fetch_audiodb_track_text(
-                    client,
-                    artist=artist,
-                    title=title,
-                    album=album,
-                    lang_code=lang_code,
-                )
-                if text:
-                    t["audio_db_text"] = text
-            fact = fetch_audiodb_music_fact(
-                client,
-                artist=artist,
-                title=title,
-                album=album,
-                lang_code=lang_code,
-            )
-            if fact:
-                t["audio_db_fact"] = fact
-        except AudioDBError as exc:
-            notes.append(f"TheAudioDB: {exc}")
-            break
-    return notes
+    return {"prompt": prompt, "tracks": [], "summary": "", "moods": []}
 
 
 def build_studio(
@@ -1419,26 +1068,27 @@ def build_studio(
     summary = ""
     moods: list[str] = []
 
-    # 1) Pre-fetch bio (AudioDB / Last.fm), immagine e testo (Musixmatch) per ogni brano,
-    #    PRIMA della chiamata LLM, così il modello può usare questi dati per generare
-    #    narrations più ricche e specifiche.
-    image_cache: dict[str, str] = {}
-    adb_client = AudioDBClient() if settings.audiodb_ready else None
-    mx_client = MusixmatchClient() if settings.musixmatch_ready else None
+    translation_lang = musixmatch_translation_code(lang_name, lang_code)
 
-    for t in enriched:
+    # 1) Pre-fetch in PARALLELO (task 9) per ogni brano: correzione metadati Musixmatch,
+    #    testo/richsync/traduzione, bio (AudioDB -> Last.fm) e immagine artista.
+    #    La catena Musixmatch -> AudioDB resta SEQUENZIALE dentro ogni worker (il nome
+    #    artista canonico serve alla bio), ma i brani sono elaborati in parallelo.
+    #    Ogni worker crea client propri: niente requests.Session condivise tra thread.
+    def enrich_track(t: dict) -> None:
         artist = t.get("artist", "")
         title = t.get("title", "")
+        mx = MusixmatchClient() if settings.musixmatch_ready else None
 
         # 1a) Musixmatch: valida e corregge titolo+artista con i dati canonici,
         #     poi recupera il testo. Va PRIMA di AudioDB così usiamo il nome
         #     artista corretto anche per la bio.
-        if mx_client and title:
+        if mx and title:
             try:
                 track_id = t.get("track_id")
-                best = mx_client.get_track(int(track_id)) if track_id else None
+                best = mx.get_track(int(track_id)) if track_id else None
                 if not best:
-                    matches = mx_client.search_tracks(track=title, artist=artist, has_lyrics=True, limit=1)
+                    matches = mx.search_tracks(track=title, artist=artist, has_lyrics=True, limit=1)
                     best = matches[0] if matches else None
                 if best:
                     t["title"] = best.track_name or title
@@ -1450,14 +1100,32 @@ def build_studio(
                     artist = t["artist"]  # nome canonico per AudioDB / Last.fm
                     title = t["title"]
                     if not t.get("lyrics") and not t.get("richsync"):
-                        lyrics_text, richsync_body = fetch_musixmatch_text(
-                            mx_client,
+                        lyrics_text, richsync_body, translated_text = fetch_musixmatch_text(
+                            mx,
                             best.track_id,
                             best.has_lyrics,
                             best.has_richsync,
+                            translation_lang=translation_lang,
                         )
                         t["lyrics"] = lyrics_text
                         t["richsync"] = richsync_body
+                        t["translated_lyrics"] = translated_text
+                        t["translation_lang"] = translation_lang
+                    elif not t.get("translated_lyrics"):
+                        try:
+                            translation = mx.get_lyrics_translation(
+                                best.track_id,
+                                translation_lang,
+                            )
+                            t["translated_lyrics"] = (
+                                translation.body
+                                if translation and not translation.is_empty
+                                else ""
+                            )
+                            t["translation_lang"] = translation_lang
+                        except MusixmatchError:
+                            t.setdefault("translated_lyrics", "")
+                            t.setdefault("translation_lang", translation_lang)
                 else:
                     t.setdefault("lyrics", "")
                     t.setdefault("richsync", [])
@@ -1467,48 +1135,12 @@ def build_studio(
 
         # 1b) Bio + immagine da AudioDB (usa il nome artista già corretto da Musixmatch)
         bio = ""
-        if adb_client and artist:
+        if settings.audiodb_ready and artist:
             try:
-                a = adb_client.get_artist(artist)
+                a = AudioDBClient().get_artist(artist)
                 if a:
                     bio = a.biography(lang_code) or ""
-                    image_cache[artist] = a.image_url
                     t["image"] = a.image_url
-                ordered_context = fetch_audiodb_ordered_context(
-                    adb_client,
-                    artist=artist,
-                    title=title,
-                    album=str(t.get("album", "")),
-                    lang_code=lang_code,
-                )
-                if ordered_context.get("song_news"):
-                    t["audio_db_song_news"] = ordered_context["song_news"]
-                if ordered_context.get("album_news"):
-                    t["audio_db_album_news"] = ordered_context["album_news"]
-                if ordered_context.get("artist_description"):
-                    t["audio_db_artist_description"] = ordered_context["artist_description"]
-                if ordered_context.get("combined"):
-                    t["audio_db_text"] = ordered_context["combined"]
-                if not t.get("audio_db_text"):
-                    text = fetch_audiodb_track_text(
-                        adb_client,
-                        artist=artist,
-                        title=title,
-                        album=str(t.get("album", "")),
-                        lang_code=lang_code,
-                    )
-                    if text:
-                        t["audio_db_text"] = text
-                if not t.get("audio_db_fact"):
-                    fact = fetch_audiodb_music_fact(
-                        adb_client,
-                        artist=artist,
-                        title=title,
-                        album=str(t.get("album", "")),
-                        lang_code=lang_code,
-                    )
-                    if fact:
-                        t["audio_db_fact"] = fact
             except AudioDBError:
                 pass
 
@@ -1519,59 +1151,25 @@ def build_studio(
             except LastFMError:
                 pass
 
-        t.setdefault("audio_db_fact", "")
-        t.setdefault("audio_db_text", "")
-        t.setdefault("audio_db_song_news", "")
-        t.setdefault("audio_db_album_news", "")
-        t.setdefault("audio_db_artist_description", "")
         t["_bio"] = bio  # campo temporaneo letto da studio_brief(), rimosso dopo
+
+    if enriched:
+        with ThreadPoolExecutor(max_workers=min(8, len(enriched))) as executor:
+            list(executor.map(enrich_track, enriched))
 
     # 2) Discorsi parlati + mood + origine geografica + riassunto (una sola chiamata LLM).
     #    I track dict includono ora _bio e lyrics, usati da studio_brief().
     if settings.llm_ready:
-        add_llm_log(
-            "Studio brief",
-            f"Generating narrated speeches, moods and artist origins for {len(enriched)} tracks.",
-        )
         try:
-            brief = storyteller_for_session().studio_brief(
+            brief = Storyteller().studio_brief(
                 title=prompt, tracks=enriched, language=lang_name
-            )
-            add_llm_log(
-                "Studio brief parsed",
-                f"Received {len(brief.get('narrations') or [])} narrations and {len(brief.get('moods') or [])} mood labels.",
             )
         except StorytellerError:
             brief = {}
-            add_llm_log(
-                "Studio brief failed",
-                "The app will keep the playlist and skip generated narration metadata.",
-            )
         narrations = brief.get("narrations") or []
         for i, t in enumerate(enriched):
             n = narrations[i] if i < len(narrations) else {}
-            musixmatch_speech = strip_narration_source_label(str(n.get("musixmatch_speech", "")).strip())
-            audiodb_speech = strip_narration_source_label(str(n.get("audiodb_speech", "")).strip())
-            if not musixmatch_speech:
-                musixmatch_source = str(t.get("lyrics") or t.get("reason") or "").strip()
-                if musixmatch_source:
-                    musixmatch_speech = compact_text(musixmatch_source, 220)
-            if not audiodb_speech:
-                audiodb_source = str(
-                    t.get("audio_db_song_news")
-                    or t.get("audio_db_album_news")
-                    or t.get("audio_db_artist_description")
-                    or t.get("audio_db_text")
-                    or t.get("audio_db_fact")
-                    or t.get("_bio")
-                    or ""
-                ).strip()
-                if audiodb_source:
-                    audiodb_speech = compact_text(audiodb_source, 220)
-            combined_speech = " ".join(part for part in (musixmatch_speech, audiodb_speech) if part).strip()
-            t["musixmatch_speech"] = musixmatch_speech
-            t["audiodb_speech"] = audiodb_speech
-            t["speech"] = combined_speech
+            t["speech"] = str(n.get("speech", "")).strip()
             t["mood"] = str(n.get("mood", "")).strip()
             t["origin"] = str(n.get("origin", "")).strip()
             try:
@@ -1594,41 +1192,20 @@ def build_studio(
         t.setdefault("origin", "")
         t.setdefault("lat", None)
         t.setdefault("lng", None)
-        t.setdefault("image", image_cache.get(t.get("artist", ""), ""))
+        t.setdefault("image", "")
         t.setdefault("audio_b64", "")
         t.setdefault("lyrics", "")
+        t.setdefault("translated_lyrics", "")
+        t.setdefault("translation_lang", translation_lang)
         t.setdefault("richsync", [])
-        t.setdefault("audio_db_text", "")
-        t.setdefault("musixmatch_speech", "")
-        t.setdefault("audiodb_speech", "")
 
-    if getattr(settings, "elevenlabs_ready", False) and not _tts_disabled():
-        if _use_embedded_tts():
-            tts_message = "Narration audio will be generated server-side one track at a time when playback starts."
-        else:
-            tts_message = "Narration audio will be generated on demand through the local TTS endpoint."
-        add_llm_log(
-            "ElevenLabs TTS",
-            tts_message,
-        )
-    elif getattr(settings, "elevenlabs_ready", False):
-        add_llm_log(
-            "ElevenLabs TTS",
-            "SONDER_TTS_MODE disables narration audio.",
-        )
-    else:
-        add_llm_log(
-            "ElevenLabs TTS",
-            "ELEVENLABS_API_KEY is missing: narration audio is disabled.",
-        )
+    # 4) Task 1: l'audio di narrazione ElevenLabs NON viene piu' pre-generato qui per
+    #    tutti i brani. Viene prodotto on-demand, UN clip alla volta, solo quando si
+    #    preme Play (o quando "Play All" raggiunge quel brano), tramite l'endpoint TTS
+    #    locale (vedi core/tts_server.py e render_studio_component). Il client del
+    #    browser scarica e mette in cache l'audio appena prima della riproduzione.
 
-    return {
-        "prompt": prompt,
-        "tracks": enriched,
-        "summary": summary,
-        "moods": moods,
-        "llm_log": current_llm_log(),
-    }
+    return {"prompt": prompt, "tracks": enriched, "summary": summary, "moods": moods}
 
 
 STUDIO_HTML = """
@@ -1639,8 +1216,8 @@ STUDIO_HTML = """
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@400;600&display=swap');
   * { box-sizing: border-box; }
-    html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
-    body { font-family: 'Inter', 'Segoe UI', sans-serif; color: #e8e6f5; background: transparent; }
+  html, body { margin: 0; padding: 0; }
+  body { font-family: 'Inter', 'Segoe UI', sans-serif; color: #e8e6f5; background: transparent; }
 
   ::-webkit-scrollbar { width: 8px; }
   ::-webkit-scrollbar-track { background: transparent; }
@@ -1750,16 +1327,18 @@ STUDIO_HTML = """
   #lyrics-box {
     flex: 1 1 auto; min-height: 160px; overflow-y: auto; padding: 10px 14px;
     background: rgba(255,255,255,.03); border-radius: 12px;
-        border: 1px solid rgba(255,255,255,.08); scroll-behavior: smooth;
-        overscroll-behavior: contain;
+    border: 1px solid rgba(255,255,255,.08); scroll-behavior: smooth;
   }
   .lyr-empty { color: #6f6a85; font-size: .82rem; font-style: italic; padding: 6px; }
   .lyr-line {
-    font-size: .86rem; line-height: 1.85; color: #8f8aa8;
-    padding: 2px 6px; border-radius: 6px;
+    font-size: .86rem; line-height: 1.55; color: #8f8aa8;
+    padding: 7px 8px; border-radius: 8px; margin-bottom: 4px;
     transition: color .35s ease, background .35s ease;
   }
   .lyr-line.active { color: #f3f1ff; font-weight: 600; background: rgba(249,115,22,.12); }
+  .lyr-translated { color: #f3f1ff; font-size: .92rem; line-height: 1.45; }
+  .lyr-original { color: #8f8aa8; font-size: .72rem; line-height: 1.35; margin-top: 2px; opacity: .82; }
+  .lyr-line.active .lyr-original { color: #b6b0ca; }
   .lyr-word.active { color: #facc15; text-shadow: 0 0 10px rgba(250,204,21,.35); }
 </style>
 </head>
@@ -1799,13 +1378,16 @@ STUDIO_HTML = """
   </div>
 
 <script>
-    const TRACKS = __TRACKS__;
-    const TOKEN = __TOKEN__;
-    const TTS_ENDPOINT = __TTS_ENDPOINT__;
-    const TTS_TOKEN = __TTS_TOKEN__;
-    const TTS_MODE = __TTS_MODE__;
-    const AUTOPLAY = __AUTOPLAY__;
-    const PLAYLIST_NAME = __PLAYLIST__;
+  const TRACKS = __TRACKS__;
+  const TTSLANG = __TTSLANG__;
+  const TOKEN = __TOKEN__;
+  const PLAYLIST_NAME = __PLAYLIST__;
+  // Task 1: endpoint TTS locale per generare la narrazione ElevenLabs ON-DEMAND,
+  // un clip alla volta. Vuoto => fallback alla Web Speech API del browser.
+  const TTS_ENDPOINT = __TTS_ENDPOINT__;
+  const TTS_TOKEN = __TTS_TOKEN__;
+  // Task 2: tolleranza (secondi) per l'allineamento del richsync (anticipo highlight).
+  const LYRIC_OFFSET = 0.18;
   const PALETTE = ["#ff2d78","#f97316","#22d3ee","#facc15","#c2410c","#34d399"];
 
     let embedController = null;
@@ -1815,6 +1397,7 @@ STUDIO_HTML = """
     let embedPosition = 0;
     let embedDuration = 0;
     let embedPaused = true;
+    let lastPlaybackUpdateTs = Date.now();
   let currentAudio = null;
   let shuffleOn = false;
   let autoSeq = false;
@@ -1822,7 +1405,6 @@ STUDIO_HTML = """
   let order = [];
   let seqPos = 0;
   let current = -1;
-    const audioObjectUrls = new Map();
 
   const statusEl = document.getElementById('status');
   const listEl = document.getElementById('list');
@@ -1833,24 +1415,6 @@ STUDIO_HTML = """
   const cMeta = document.getElementById('c-meta');
   const cSpeech = document.getElementById('c-speech');
   const pMsg = document.getElementById('p-msg');
-
-    function ttsLog(message, data) {
-        if (data !== undefined) console.log('[Sonder TTS]', message, data);
-        else console.log('[Sonder TTS]', message);
-    }
-
-    function ttsError(message, error) {
-        console.error('[Sonder TTS]', message, error);
-    }
-
-    ttsLog('component initialized', {
-        tracks: TRACKS.length,
-        mode: TTS_MODE,
-        autoplay: AUTOPLAY,
-        endpoint: TTS_ENDPOINT || '(empty)',
-        hasToken: Boolean(TTS_TOKEN),
-        hasSpotifyToken: Boolean(TOKEN)
-    });
 
   function setStatus(s) { statusEl.textContent = s; }
   function setPMsg(s) { pMsg.textContent = s; }
@@ -1869,41 +1433,6 @@ STUDIO_HTML = """
     if (id) return 'https://open.spotify.com/track/' + id;
     return 'https://open.spotify.com/search/' + encodeURIComponent(((t.title || '') + ' ' + (t.artist || '')).trim());
   }
-
-    function normalizeSearchText(s) {
-        return String(s || '')
-            .replace(/\\s*[\\(\\[].*?[\\)\\]]/g, ' ')
-            .replace(/\\s+[-–—]\\s+(remaster(ed)?|live|radio edit|single version|album version|explicit|clean|mono|stereo).*$/i, ' ')
-            .replace(/\\s+/g, ' ')
-            .trim();
-    }
-
-    function spotifyQueries(t) {
-        const title = normalizeSearchText(t.title || '');
-        const artist = normalizeSearchText(t.artist || '').replace(/\\s+(feat\\.?|ft\\.?|featuring)\\s+.*$/i, '').trim();
-        const album = normalizeSearchText(t.album || '');
-        const queries = [];
-        if (title && artist && album) queries.push('track:' + title + ' artist:' + artist + ' album:' + album);
-        if (title && artist) queries.push('track:' + title + ' artist:' + artist);
-        if (title && album) queries.push('track:' + title + ' album:' + album);
-        if (title) queries.push((title + ' ' + artist).trim());
-        return [...new Set(queries.filter(Boolean))];
-    }
-
-    function spotifyMatchScore(item, t) {
-        const title = normalizeSearchText(t.title || '').toLowerCase();
-        const artist = normalizeSearchText(t.artist || '').toLowerCase().replace(/\\s+(feat\\.?|ft\\.?|featuring)\\s+.*$/i, '').trim();
-        const album = normalizeSearchText(t.album || '').toLowerCase();
-        const itemTitle = normalizeSearchText(item.name || '').toLowerCase();
-        const itemAlbum = normalizeSearchText(item.album && item.album.name || '').toLowerCase();
-        const itemArtists = (item.artists || []).map(a => normalizeSearchText(a.name || '').toLowerCase()).join(' ');
-        let score = 0;
-        if (itemTitle === title) score += 60;
-        else if (itemTitle.includes(title) || title.includes(itemTitle)) score += 35;
-        if (artist && itemArtists.includes(artist)) score += 30;
-        if (album && itemAlbum && (itemAlbum === album || itemAlbum.includes(album) || album.includes(itemAlbum))) score += 10;
-        return score;
-    }
 
   function showSpotifyEmbed(uri) {
     const id = spotifyTrackId(uri);
@@ -1952,7 +1481,6 @@ STUDIO_HTML = """
       '</div>' +
       '<a class="ti-open" href="' + trackSpotifyLink(t) + '" target="_blank" rel="noopener" title="Open on Spotify">&#8599;</a>';
     row.querySelector('.ti-play').addEventListener('click', (e) => {
-            ttsLog('track play clicked', { index: i, title: t.title, artist: t.artist });
       e.stopPropagation(); autoSeq = false; runTrack(i, true, false);
     });
     row.querySelector('.ti-body').addEventListener('click', () => {
@@ -1979,31 +1507,12 @@ STUDIO_HTML = """
     if (t.origin) bits.push('📍 ' + t.origin);
     if (t.mood) bits.push(t.mood);
     cMeta.textContent = bits.filter(Boolean).join('  ·  ');
-        const musix = (t.musixmatch_speech || '').trim();
-        const adb = (t.audiodb_speech || '').trim();
-        if (musix || adb) {
-            cSpeech.innerHTML =
-                (musix ? '<div>' + esc(musix) + '</div>' : '') +
-                (adb ? '<div style="margin-top:12px;">' + esc(adb) + '</div>' : '');
-        } else {
-            cSpeech.textContent = t.speech || (t.reason || 'No speech available for this track.');
-        }
+    cSpeech.textContent = t.speech || (t.reason || 'No speech available for this track.');
     showLyrics(i);
     prepareTrackPlayer(i);
   }
 
   // ---- Lyrics ----
-    function numericTime(value) {
-        const n = Number(value);
-        if (!Number.isFinite(n)) return null;
-        return n > 1000 ? n / 1000 : n;
-    }
-
-    function datasetTime(value) {
-        if (value === undefined || value === null || value === '') return null;
-        return numericTime(value);
-    }
-
   function richsyncLineText(item) {
     const line = item && (item.l || item.line || item.text || '');
     if (Array.isArray(line)) {
@@ -2015,94 +1524,136 @@ STUDIO_HTML = """
     return String(line || '').trim();
   }
 
+  function cleanLyricLines(text) {
+    return String(text || '').split('\n')
+      .map(l => l.trim())
+      .filter(l => l && !l.startsWith('****') && !l.toLowerCase().includes('commercial use'));
+  }
+
+  // Task 2: nessun player di testi sincronizzati ufficiale è esposto dalle API
+  // pubbliche (lo Spotify Embed riproduce il brano ufficiale ma NON fornisce i
+  // testi sincronizzati; Musixmatch non offre un player embeddabile pubblico).
+  // Quindi NON si finge la sincronia: si usa il richsync Musixmatch SOLO se i
+  // suoi tempi sono affidabili, altrimenti si ripiega su testo riga-per-riga.
+  function richsyncTimingOk(richsync) {
+    let prev = -1, valid = 0, monotonic = true, maxTs = 0;
+    for (const item of richsync) {
+      const rawTs = (item && (item.ts != null ? item.ts : item.start));
+      const ts = Number(rawTs);
+      if (rawTs == null || !Number.isFinite(ts)) continue;
+      valid++;
+      if (ts + 0.001 < prev) monotonic = false;
+      prev = ts;
+      if (ts > maxTs) maxTs = ts;
+    }
+    // Servono abbastanza righe temporizzate, in ordine, su un arco > 1s.
+    return valid >= 4 && monotonic && maxTs > 1;
+  }
+
   function showLyrics(i) {
     const t = TRACKS[i];
     const section = document.getElementById('lyrics-section');
     const box = document.getElementById('lyrics-box');
     section.style.display = 'flex';
     const richsync = Array.isArray(t.richsync) ? t.richsync : [];
-    if (richsync.length) {
+    const translatedLines = cleanLyricLines(t.translated_lyrics);
+
+    // 1) Richsync di buona qualità -> sincronia parola/riga.
+    if (richsync.length && richsyncTimingOk(richsync)) {
       box.innerHTML = richsync.map((item, idx) => {
-        const text = richsyncLineText(item);
-        if (!text) return '';
-                const startRaw = item.ts ?? item.start ?? item.time ?? 0;
-                const endRaw = item.te ?? item.end ?? item.endTime ?? '';
-                const start = numericTime(startRaw) ?? 0;
-                const end = numericTime(endRaw);
+        const originalText = richsyncLineText(item);
+        if (!originalText) return '';
+        const translatedText = translatedLines[idx] || originalText;
+        const start = Number(item.ts != null ? item.ts : (item.start || 0));
+        const end = Number(item.te != null ? item.te : (item.end || 0));
         const line = item.l || item.line || item.text || '';
-        let htmlText = esc(text);
+        let originalHtml = esc(originalText);
         if (Array.isArray(line)) {
-          htmlText = line.map((token, wordIdx) => {
+          originalHtml = line.map((token, wordIdx) => {
             const raw = token && typeof token === 'object' ? (token.c || token.text || '') : String(token || '');
-                        const offset = token && typeof token === 'object' ? (numericTime(token.o ?? token.offset ?? 0) ?? 0) : 0;
+            const offset = token && typeof token === 'object' ? Number(token.o || token.offset || 0) : 0;
             return '<span class="lyr-word" data-offset="' + offset + '" data-word="' + wordIdx + '">' + esc(raw) + '</span>';
           }).join('');
         }
-                                const endAttr = end === null ? '' : end;
-                return '<div class="lyr-line" data-idx="' + idx + '" data-start="' + start + '" data-end="' + endAttr + '">' + htmlText + '</div>';
+        return '<div class="lyr-line" data-idx="' + idx + '" data-start="' + start + '" data-end="' + end + '">' +
+          '<div class="lyr-translated">' + esc(translatedText) + '</div>' +
+          '<div class="lyr-original">' + originalHtml + '</div>' +
+        '</div>';
       }).join('');
-            box.scrollTop = 0;
-            syncLyrics(embedPosition, embedDuration);
       return;
     }
+
+    // 2) Richsync presente ma con tempi inaffidabili -> righe senza timestamp
+    //    (sincronia proporzionale, niente highlight di parole fasullo).
+    if (richsync.length) {
+      const lines = richsync.map(it => richsyncLineText(it)).filter(Boolean);
+      if (lines.length) {
+        box.innerHTML = lines.map((l, idx) =>
+          '<div class="lyr-line" data-idx="' + idx + '">' +
+            '<div class="lyr-translated">' + esc(translatedLines[idx] || l) + '</div>' +
+            '<div class="lyr-original">' + esc(l) + '</div>' +
+          '</div>'
+        ).join('');
+        return;
+      }
+    }
+
+    // 3) Solo testo semplice (line-level / plain).
     if (!t.lyrics || !t.lyrics.trim()) {
-      box.innerHTML = '<div class="lyr-empty">Synced lyrics unavailable for this track.</div>';
+      box.innerHTML = '<div class="lyr-empty">Synced lyrics unavailable for this track. Open it on Spotify for official synced lyrics.</div>';
       return;
     }
-    const lines = t.lyrics.split('\\n')
-      .map(l => l.trim())
-      .filter(l => l && !l.startsWith('****') && !l.toLowerCase().includes('commercial use'));
-    box.innerHTML = lines.map((l, idx) =>
-      '<div class="lyr-line" data-idx="' + idx + '">' + esc(l) + '</div>'
+    const originalLines = cleanLyricLines(t.lyrics);
+    box.innerHTML = originalLines.map((l, idx) =>
+      '<div class="lyr-line" data-idx="' + idx + '">' +
+        '<div class="lyr-translated">' + esc(translatedLines[idx] || l) + '</div>' +
+        '<div class="lyr-original">' + esc(l) + '</div>' +
+      '</div>'
     ).join('');
-        box.scrollTop = 0;
-        syncLyrics(embedPosition, embedDuration);
   }
 
   function syncLyrics(position, duration) {
     const box = document.getElementById('lyrics-box');
     const lines = box.querySelectorAll('.lyr-line');
-        if (!lines.length) return;
-        const pos = numericTime(position) ?? 0;
-        const dur = numericTime(duration) ?? 0;
-        const hasTimedLines = Array.from(lines).some(el => datasetTime(el.dataset.start) !== null);
+    if (!lines.length || !duration) return;
+    const pos = position > 1000 ? position / 1000 : position;
+    const dur = duration > 1000 ? duration / 1000 : duration;
+    // Anticipa leggermente l'highlight per compensare la latenza del playback_update.
+    const adj = pos + LYRIC_OFFSET;
     let idx = -1;
-        if (hasTimedLines) {
-            lines.forEach((el, i) => {
-                const start = datasetTime(el.dataset.start);
-                if (start === null || pos < start) return;
-                const explicitEnd = datasetTime(el.dataset.end);
-                const next = lines[i + 1];
-                const nextStart = next ? datasetTime(next.dataset.start) : null;
-                const end = explicitEnd !== null
-                    ? explicitEnd
-                    : (nextStart !== null ? nextStart : Number.POSITIVE_INFINITY);
-                if (pos < end + 0.08) idx = i;
-            });
-        }
-        if (idx < 0 && dur > 0) idx = Math.min(Math.floor((pos / dur) * lines.length), lines.length - 1);
-        if (idx < 0) return;
+    let latestTimedIdx = -1;
+    let hasTimedLines = false;
+    lines.forEach((el, i) => {
+      const start = Number(el.dataset.start);
+      const end = Number(el.dataset.end);
+      const hasStart = el.dataset.start !== undefined && el.dataset.start !== '' && !Number.isNaN(start);
+      const hasEnd = el.dataset.end !== undefined && !Number.isNaN(end) && end > start;
+      if (hasStart) {
+        hasTimedLines = true;
+        if (adj >= start) latestTimedIdx = i;
+        // Finestra con tolleranza per assorbire piccoli disallineamenti del richsync.
+        if (adj >= start && (!hasEnd || adj <= end + LYRIC_OFFSET)) idx = i;
+      }
+    });
+    if (idx < 0 && latestTimedIdx >= 0) idx = latestTimedIdx;
+    if (idx < 0 && !hasTimedLines) idx = Math.min(Math.floor((pos / dur) * lines.length), lines.length - 1);
+    if (idx < 0) return;
     let changed = false;
     lines.forEach((el, i) => {
       const was = el.classList.contains('active');
       el.classList.toggle('active', i === idx);
       if (i === idx) {
-                const start = datasetTime(el.dataset.start) || 0;
+        const start = Number(el.dataset.start) || 0;
         el.querySelectorAll('.lyr-word').forEach(word => {
-                    const offset = datasetTime(word.dataset.offset) || 0;
-          word.classList.toggle('active', pos >= start + offset);
+          const offset = Number(word.dataset.offset || 0);
+          word.classList.toggle('active', adj >= start + offset);
         });
       } else {
         el.querySelectorAll('.lyr-word').forEach(word => word.classList.remove('active'));
       }
       if (!was && i === idx) changed = true;
     });
-        if (changed && lines[idx]) {
-            const target = lines[idx];
-            const targetTop = target.offsetTop - box.offsetTop;
-            const centeredTop = targetTop - (box.clientHeight / 2) + (target.clientHeight / 2);
-            box.scrollTo({ top: Math.max(0, centeredTop), behavior: 'smooth' });
-        }
+    if (changed && lines[idx]) lines[idx].scrollIntoView({ block: 'center', behavior: 'smooth' });
   }
 
   // ---- Spotify Web API helpers (token personale dell'utente) ----
@@ -2112,35 +1663,76 @@ STUDIO_HTML = """
     }, opts || {}));
   }
 
+  function normalizeMeta(s) {
+    return String(s || '')
+      .toLowerCase()
+      .replace(/[\\(\\[].*?[\\)\\]]/g, ' ')
+      .replace(/\\s-\\s.*$/, ' ')
+      .replace(/\\b(feat|ft|featuring|with)\\b.*$/, ' ')
+      .replace(/[^\\w\\s]/g, ' ')
+      .replace(/\\s+/g, ' ')
+      .trim();
+  }
+
+  function scoreCandidate(it, title, artist) {
+    const wantT = normalizeMeta(title);
+    const wantA = normalizeMeta(artist);
+    const candT = normalizeMeta(it.name);
+    const candA = normalizeMeta((it.artists || []).map(a => a.name).join(' '));
+    let s = 0;
+    if (wantT && wantT === candT) s += 0.6;
+    else if (wantT && (candT.indexOf(wantT) >= 0 || wantT.indexOf(candT) >= 0)) s += 0.4;
+    if (wantA) {
+      if (wantA === candA) s += 0.4;
+      else if (candA.indexOf(wantA) >= 0 || wantA.indexOf(candA) >= 0) s += 0.25;
+    } else { s += 0.2; }
+    s += Math.min(it.popularity || 0, 100) / 1000.0;
+    return s;
+  }
+
+  // Task 4: risolve l'URI Spotify usando i metadati canonici (titolo/artista corretti
+  // da Musixmatch) con più tentativi e scelta del candidato più simile, per ridurre i
+  // brani "non trovati".
   async function resolveUri(t) {
     if (t.uri) return t.uri;
     if (!TOKEN) return '';
-    try {
-            for (const query of spotifyQueries(t)) {
-                const r = await api('/search?type=track&limit=5&q=' + encodeURIComponent(query));
-                if (r.ok) {
-                    const d = await r.json();
-                    const items = d.tracks && d.tracks.items ? d.tracks.items : [];
-                    const ranked = items
-                        .map(item => ({ item, score: spotifyMatchScore(item, t) }))
-                        .sort((a, b) => b.score - a.score);
-                    const best = ranked[0];
-                    if (best && best.item && best.score >= 45) {
-                        const it = best.item;
-                        t.uri = it.uri;
-                        t.spotify_match = { name: it.name, artist: (it.artists || []).map(a => a.name).join(', '), score: best.score };
-                        const img = it.album && it.album.images && it.album.images[0];
-                        if (img) { t.art = img.url; if (!t.image) t.image = img.url; }
-                        return t.uri;
-                    }
+    const title = (t.title || '').trim();
+    const artist = (t.artist || '').trim();
+    if (!title) return '';
+    const queries = [];
+    if (artist) {
+      queries.push('track:"' + title + '" artist:"' + artist + '"');
+      queries.push(title + ' ' + artist);
+    }
+    queries.push('track:"' + title + '"');
+    queries.push(title);
+    let best = null, bestScore = 0;
+    for (const query of queries) {
+      try {
+        const r = await api('/search?type=track&limit=5&q=' + encodeURIComponent(query));
+        if (!r.ok) continue;
+        const d = await r.json();
+        const items = (d.tracks && d.tracks.items) || [];
+        for (const it of items) {
+          if (!it.uri) continue;
+          const sc = scoreCandidate(it, title, artist);
+          if (sc > bestScore) { best = it; bestScore = sc; }
         }
-      }
-    } catch (e) {}
+        if (bestScore >= 0.9) break;
+      } catch (e) {}
+    }
+    if (best && bestScore >= 0.4) {
+      t.uri = best.uri;
+      const img = best.album && best.album.images && best.album.images[0];
+      if (img) { t.art = img.url; if (!t.image) t.image = img.url; }
+      return t.uri;
+    }
     return '';
   }
 
-    // ---- Audio: voce ElevenLabs MP3 + Spotify ----
+  // ---- Audio: voce (ElevenLabs MP3 o Web Speech fallback) + Spotify ----
   function stopAudio() {
+    try { window.speechSynthesis.cancel(); } catch (e) {}
     if (currentAudio) {
       try { currentAudio.pause(); currentAudio.currentTime = 0; } catch (e) {}
       currentAudio = null;
@@ -2151,115 +1743,67 @@ STUDIO_HTML = """
         }
   }
 
-    function requestEmbeddedTts(i) {
-        const activeOrder = order.length ? order : TRACKS.map((_, idx) => idx);
-        const url = new URL(document.referrer || window.location.href);
-        url.searchParams.set('sonder_tts_track', String(i));
-        url.searchParams.set('sonder_tts_seq', autoSeq ? '1' : '0');
-        url.searchParams.set('sonder_tts_order', activeOrder.join(','));
-        url.searchParams.set('sonder_tts_pos', String(Math.max(0, seqPos)));
-        url.searchParams.set('sonder_tts_nonce', String(Date.now()));
-        setStatus('Generating ElevenLabs narration...');
-        window.parent.location.href = url.toString();
-        throw new Error('tts_generation_requested');
+  function arrayBufferToB64(buffer) {
+    let binary = '';
+    const bytes = new Uint8Array(buffer);
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
     }
+    return btoa(binary);
+  }
 
-    async function narrationAudioUrl(i) {
-        const t = TRACKS[i];
-        ttsLog('narrationAudioUrl start', { index: i, title: t.title, hasEndpoint: Boolean(TTS_ENDPOINT), hasToken: Boolean(TTS_TOKEN) });
-        if (t.audio_url) {
-            ttsLog('using track audio_url cache', { index: i });
-            return t.audio_url;
-        }
-        if (audioObjectUrls.has(i)) {
-            ttsLog('using object URL cache', { index: i });
-            return audioObjectUrls.get(i);
-        }
-        if (t.audio_b64) {
-            t.audio_url = 'data:audio/mpeg;base64,' + t.audio_b64;
-            ttsLog('using embedded audio_b64', { index: i, bytesApprox: t.audio_b64.length });
-            return t.audio_url;
-        }
-        if (TTS_MODE === 'embedded') {
-            ttsLog('requesting embedded audio generation', { index: i });
-            requestEmbeddedTts(i);
-        }
-        const primaryText = String(t.speech || '').trim();
-        const fallbackText = [t.musixmatch_speech, t.audiodb_speech]
-            .map(value => String(value || '').trim())
-            .filter(Boolean)
-            .join(' ')
-            .trim();
-        const text = primaryText || fallbackText;
-        if (!text) {
-            ttsLog('blocked before fetch: missing narration text', { index: i });
-            throw new Error('missing_text');
-        }
-        if (!TTS_ENDPOINT || !TTS_TOKEN) {
-            ttsLog('blocked before fetch: missing endpoint or token', { endpoint: TTS_ENDPOINT || '', hasToken: Boolean(TTS_TOKEN) });
-            throw new Error(TTS_MODE === 'embedded' ? 'tts_embedded_unavailable' : 'elevenlabs_not_configured');
-        }
+  // Task 1: genera (lazy) l'audio di narrazione per UN brano chiamando l'endpoint
+  // TTS locale ElevenLabs. Il server mette in cache per hash del testo, quindi il
+  // riascolto non rigenera. Ritorna base64 oppure '' (fallback Web Speech).
+  async function fetchTtsB64(text) {
+    if (!TTS_ENDPOINT || !text) return '';
+    try {
+      const r = await fetch(TTS_ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Sonder-TTS-Token': TTS_TOKEN },
+        body: JSON.stringify({ text: text })
+      });
+      if (!r.ok) return '';
+      const buf = await r.arrayBuffer();
+      return arrayBufferToB64(buf);
+    } catch (e) { return ''; }
+  }
 
-        ttsLog('fetch POST /tts', { endpoint: TTS_ENDPOINT, textChars: text.length, preview: text.slice(0, 80) });
-        const response = await fetch(TTS_ENDPOINT, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-Sonder-TTS-Token': TTS_TOKEN
-            },
-            body: JSON.stringify({ text })
-        });
-        ttsLog('fetch response', { status: response.status, ok: response.ok, cache: response.headers.get('X-Sonder-TTS-Cache') });
-        if (!response.ok) {
-            let detail = 'tts_' + response.status;
-            try {
-                const data = await response.json();
-                if (data && data.error) detail = String(data.error);
-            } catch (e) {}
-            throw new Error(detail);
-        }
-        const blob = await response.blob();
-        const url = URL.createObjectURL(blob);
-        audioObjectUrls.set(i, url);
-        ttsLog('audio blob ready', { index: i, bytes: blob.size, type: blob.type });
-        return url;
-    }
-
-    function ttsStatusMessage(error) {
-        const message = String(error && error.message || error || '');
-        if (message.includes('tts_generation_requested')) return 'Generating ElevenLabs audio...';
-        if (message.includes('elevenlabs_not_configured')) return 'ElevenLabs key missing';
-        if (message.includes('tts_embedded_unavailable')) return 'ElevenLabs audio unavailable';
-        if (message.includes('missing_text')) return 'Narration text missing';
-        if (message.includes('forbidden')) return 'TTS token rejected';
-        if (message.includes('NetworkError') || message.includes('Failed to fetch')) return 'TTS server unreachable';
-        return 'ElevenLabs audio unavailable';
-    }
-
-    async function speak(i, onend) {
+  // speak(track, onend): genera/riproduce la narrazione del brano UNA alla volta.
+  // L'audio è prodotto SOLO ora (lazy) e messo in cache su track.audio_b64.
+  async function speak(track, onend) {
     // Stop anything currently playing.
+    try { window.speechSynthesis.cancel(); } catch (e) {}
     if (currentAudio) { try { currentAudio.pause(); } catch (e) {} currentAudio = null; }
 
-        try {
-                        ttsLog('speak start', { index: i });
-            const audioUrl = await narrationAudioUrl(i);
-            if (current !== i) return;
-            setStatus('🗣️ Narrating…');
-            const audio = new Audio(audioUrl);
-      currentAudio = audio;
-            audio.onended = () => { ttsLog('audio ended', { index: i }); currentAudio = null; onend && onend(); };
-            audio.onerror = () => { ttsError('audio element error', audio.error); currentAudio = null; onend && onend(); };
-            audio.play()
-                .then(() => ttsLog('audio playback started', { index: i }))
-                .catch((error) => { ttsError('audio.play rejected', error); currentAudio = null; onend && onend(); });
-      return;
-        } catch (e) {
-                        ttsError('speak failed', e);
-            currentAudio = null;
-            setStatus(ttsStatusMessage(e));
-                        if (String(e && e.message || e || '').includes('tts_generation_requested')) return;
-            onend && onend();
+    const text = (track && track.speech) || '';
+    let audioB64 = (track && track.audio_b64) || '';
+
+    // Genera l'audio ElevenLabs appena prima della riproduzione (lazy, on-demand).
+    if (!audioB64 && text && TTS_ENDPOINT) {
+      setStatus('🗣️ Generating narration…');
+      audioB64 = await fetchTtsB64(text);
+      if (audioB64 && track) track.audio_b64 = audioB64;  // cache per non rigenerare
     }
+
+    if (audioB64) {
+      const audio = new Audio('data:audio/mpeg;base64,' + audioB64);
+      currentAudio = audio;
+      audio.onended = () => { currentAudio = null; onend && onend(); };
+      audio.onerror = () => { currentAudio = null; onend && onend(); };
+      audio.play().catch(() => { currentAudio = null; onend && onend(); });
+      return;
+    }
+
+    // Fallback: browser Web Speech API (anch'esso lazy, nessuna pre-generazione).
+    if (!text) { onend && onend(); return; }
+    const u = new SpeechSynthesisUtterance(text);
+    if (TTSLANG) u.lang = TTSLANG;
+    u.rate = 0.98; u.pitch = 1.0;
+    u.onend = () => onend && onend();
+    u.onerror = () => onend && onend();
+    window.speechSynthesis.speak(u);
   }
 
   async function startSong(i, seq) {
@@ -2290,14 +1834,13 @@ STUDIO_HTML = """
     }
   }
 
-    async function runTrack(i, withVoice, seq) {
-    ttsLog('runTrack', { index: i, withVoice: withVoice, sequence: seq });
+  function runTrack(i, withVoice, seq) {
     current = i;
     highlight(i);
     showCenter(i);
     if (withVoice) {
-            setStatus('🗣️ Preparing narration…');
-            await speak(i, () => startSong(i, seq));
+      setStatus('🗣️ Narrating…');
+      speak(TRACKS[i], () => startSong(i, seq));
     }
   }
 
@@ -2322,7 +1865,6 @@ STUDIO_HTML = """
 
   document.getElementById('playAll').addEventListener('click', () => {
     if (!TRACKS.length) return;
-        ttsLog('play all clicked', { tracks: TRACKS.length, shuffle: shuffleOn });
     stopAudio();
     order = TRACKS.map((_, i) => i);
     if (shuffleOn) shuffleArray(order);
@@ -2355,15 +1897,13 @@ STUDIO_HTML = """
         });
     };
 
-    let lastPlaybackUpdate = 0;
-
-    function onState(state) {
+  function onState(state) {
         if (!state || !state.data) return;
         const d = state.data;
-        embedPosition = typeof d.position === 'number' ? (numericTime(d.position) ?? embedPosition) : embedPosition;
-        embedDuration = typeof d.duration === 'number' ? (numericTime(d.duration) ?? embedDuration) : embedDuration;
+        embedPosition = typeof d.position === 'number' ? d.position : embedPosition;
+        embedDuration = typeof d.duration === 'number' ? d.duration : embedDuration;
         embedPaused = !!d.isPaused;
-        if (!embedPaused) lastPlaybackUpdate = performance.now();
+        lastPlaybackUpdateTs = Date.now();
         if (!embedPaused && embedPosition > 0) embedPlayed = true;
 
         if (current >= 0) syncLyrics(embedPosition, embedDuration);
@@ -2373,11 +1913,14 @@ STUDIO_HTML = """
         }
   }
 
-    setInterval(() => {
-        if (current < 0 || embedPaused) return;
-        const elapsed = lastPlaybackUpdate ? ((performance.now() - lastPlaybackUpdate) / 1000) : 0;
-        syncLyrics(embedPosition + elapsed, embedDuration);
-    }, 180);
+  setInterval(() => {
+        if (current < 0 || embedPaused || !embedDuration) return;
+        const elapsedMs = Date.now() - lastPlaybackUpdateTs;
+        const estimatedPosition = embedPosition > 1000
+            ? embedPosition + elapsedMs
+            : embedPosition + (elapsedMs / 1000);
+        syncLyrics(estimatedPosition, embedDuration);
+  }, 250);
 
     // Stato iniziale dell'area player.
     document.getElementById('player').style.display = 'block';
@@ -2386,20 +1929,9 @@ STUDIO_HTML = """
         document.getElementById('need-login').textContent = 'Log in to your Spotify in the sidebar to resolve missing track URIs and enable the player.';
     }
     if (TRACKS.length) {
-        const autoplayIndex = AUTOPLAY && Number.isInteger(AUTOPLAY.index) ? AUTOPLAY.index : -1;
-        if (autoplayIndex >= 0 && autoplayIndex < TRACKS.length) {
-            order = Array.isArray(AUTOPLAY.order) && AUTOPLAY.order.length ? AUTOPLAY.order : TRACKS.map((_, i) => i);
-            autoSeq = Boolean(AUTOPLAY.seq);
-            seqPos = Number.isInteger(AUTOPLAY.pos) ? Math.max(0, AUTOPLAY.pos) : 0;
-            current = autoplayIndex;
-            highlight(autoplayIndex);
-            showCenter(autoplayIndex);
-            setTimeout(() => runTrack(autoplayIndex, true, autoSeq), 250);
-        } else {
-            current = 0;
-            highlight(0);
-            showCenter(0);
-        }
+        current = 0;
+        highlight(0);
+        showCenter(0);
   }
 </script>
 <script src="https://open.spotify.com/embed/iframe-api/v1" async></script>
@@ -2408,28 +1940,14 @@ STUDIO_HTML = """
 """
 
 
-def render_studio_component(studio: dict) -> None:
-    """Renderizza la regia a 3 colonne con voce ElevenLabs e player Spotify per-utente."""
+def render_studio_component(studio: dict, tts_lang: str) -> None:
+    """Renderizza la regia a 3 colonne con sintesi vocale e player Spotify per-utente."""
     tracks = studio.get("tracks", [])
-    tts_endpoint = ""
-    tts_token = ""
-    tts_label = _tts_delivery_label()
-    if getattr(settings, "elevenlabs_ready", False) and not _tts_disabled():
-        if not _use_embedded_tts():
-            try:
-                tts_info = ensure_tts_server()
-                tts_endpoint = tts_info.endpoint
-                tts_token = tts_info.token
-            except TTSServerError as exc:
-                add_llm_log("ElevenLabs TTS endpoint failed", str(exc))
-    autoplay = st.session_state.pop("_sonder_tts_autoplay", {}) or {}
     payload = [
         {
             "title": t.get("title", ""),
             "artist": t.get("artist", ""),
             "speech": t.get("speech", ""),
-            "musixmatch_speech": t.get("musixmatch_speech", ""),
-            "audiodb_speech": t.get("audiodb_speech", ""),
             "mood": t.get("mood", ""),
             "origin": t.get("origin", ""),
             "reason": t.get("reason", ""),
@@ -2437,11 +1955,11 @@ def render_studio_component(studio: dict) -> None:
             "uri": t.get("uri", ""),
             "audio_b64": t.get("audio_b64", ""),
             "lyrics": t.get("lyrics", ""),
+            "translated_lyrics": t.get("translated_lyrics", ""),
+            "translation_lang": t.get("translation_lang", ""),
             "richsync": t.get("richsync", []),
             "track_id": t.get("track_id", ""),
             "album": t.get("album", ""),
-            "audio_db_fact": t.get("audio_db_fact", ""),
-            "audio_db_text": t.get("audio_db_text", ""),
         }
         for t in tracks
     ]
@@ -2450,14 +1968,29 @@ def render_studio_component(studio: dict) -> None:
         f"Sonder · {studio.get('prompt', '')[:60]}", ensure_ascii=False
     )
     token_json = json.dumps(spotify_token())
+    # Task 1: avvia l'endpoint TTS locale (loopback) e passa endpoint+token al
+    # componente, così il browser può generare la narrazione ElevenLabs on-demand,
+    # un clip alla volta. In modalità "embedded" (hosting) o senza chiave restano
+    # vuoti e si usa la Web Speech API del browser.
+    tts_endpoint = ""
+    tts_token = ""
+    mode = (getattr(settings, "sonder_tts_mode", "auto") or "auto").lower()
+    if settings.elevenlabs_ready and mode != "embedded":
+        try:
+            info = tts_server.ensure_tts_server()
+            tts_endpoint = info.endpoint
+            tts_token = info.token
+        except tts_server.TTSServerError:
+            tts_endpoint = ""
+            tts_token = ""
+    # I valori sono inseriti come letterali JS: vanno serializzati con json.dumps.
     rendered = (
         STUDIO_HTML.replace("__TRACKS__", tracks_json)
+        .replace("__TTSLANG__", json.dumps(tts_lang or ""))
         .replace("__PLAYLIST__", playlist_name)
         .replace("__TOKEN__", token_json)
         .replace("__TTS_ENDPOINT__", json.dumps(tts_endpoint))
         .replace("__TTS_TOKEN__", json.dumps(tts_token))
-        .replace("__TTS_MODE__", json.dumps(tts_label))
-        .replace("__AUTOPLAY__", json.dumps(autoplay))
     )
     components.html(rendered, height=860, scrolling=False)
 
@@ -2541,6 +2074,89 @@ def render_studio_sections(studio: dict) -> None:
         st.caption("Summary not available (requires LLM to be configured).")
 
 
+def _human_number(value: float) -> str:
+    """Formatta un numero grande in forma compatta (es. 1.2M, 34K)."""
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return "0"
+    for unit, threshold in (("B", 1e9), ("M", 1e6), ("K", 1e3)):
+        if abs(value) >= threshold:
+            return f"{value / threshold:.1f}{unit}".replace(".0", "")
+    return str(int(value))
+
+
+def render_songstats_section(studio: dict) -> None:
+    """Task 8: grafici e statistiche Songstats per i brani/artisti risolti.
+
+    Mostrato a fondo pagina. Gestisce in modo grazioso la mancanza di chiave o gli
+    errori (modalità demo). I lookup sono in cache di processo e parallelizzati.
+    """
+    tracks = studio.get("tracks", [])
+    if not tracks:
+        return
+
+    st.markdown('<hr class="hr-glow">', unsafe_allow_html=True)
+    st.markdown("### 📊 Streaming stats — Songstats")
+
+    if not settings.songstats_ready:
+        st.caption(
+            "Set `SONGSTATS_API_KEY` in `.env` to show real streaming/popularity "
+            "stats here (streams, followers, playlists…)."
+        )
+        return
+
+    # Riusa le statistiche già allegate dal filtro popolarità; altrimenti recupera
+    # in parallelo (cache di processo => nessuna doppia chiamata tra i rerun).
+    def get_stats(t: dict) -> dict[str, Any] | None:
+        return t.get("songstats") or _songstats_track_stats(
+            t.get("title", ""), t.get("artist", "")
+        )
+
+    with st.spinner("Loading Songstats…"):
+        with ThreadPoolExecutor(max_workers=min(8, len(tracks))) as executor:
+            stats_list = list(executor.map(get_stats, tracks))
+
+    rows: list[dict[str, Any]] = []
+    any_stats = False
+    for t, stats in zip(tracks, stats_list):
+        label = f'{t.get("title", "")} — {t.get("artist", "")}'
+        if not stats:
+            continue
+        any_stats = True
+        rows.append(
+            {
+                "Track": label,
+                "Streams": int(stats.get("total_streams", 0) or 0),
+            }
+        )
+
+    if not any_stats:
+        st.caption("No Songstats data available for these tracks.")
+        return
+
+    # 1) Grafico a barre: stream totali per brano (metrica comparabile).
+    df = pd.DataFrame(rows).set_index("Track")
+    if not df.empty and df["Streams"].sum() > 0:
+        st.markdown("**Total streams per track**")
+        st.bar_chart(df, height=320)
+
+    # 2) Dettaglio per brano: metriche principali (streams, followers, playlist…).
+    for t, stats in zip(tracks, stats_list):
+        if not stats:
+            continue
+        headline = stats.get("headline") or []
+        label = f'{t.get("title", "")} — {t.get("artist", "")}'
+        with st.expander(f'📈 {label}  ·  {_human_number(stats.get("total_streams", 0))} streams'):
+            if headline:
+                cols = st.columns(min(4, len(headline)))
+                for idx, (metric_label, metric_value) in enumerate(headline[:8]):
+                    with cols[idx % len(cols)]:
+                        st.metric(metric_label, _human_number(metric_value))
+            else:
+                st.caption("No detailed metrics available for this track.")
+
+
 # --------------------------------------------------------------------------- #
 # Chat
 # --------------------------------------------------------------------------- #
@@ -2550,7 +2166,9 @@ def render_message(index: int, msg: dict) -> None:
     with st.chat_message(msg["role"], avatar=avatar):
         st.markdown(msg["content"])
 
-        render_llm_log(msg.get("llm_log"))
+        if msg.get("reasoning"):
+            with st.expander("🧠 Model reasoning chain", expanded=False):
+                st.markdown(msg["reasoning"])
 
         tracks = msg.get("tracks") or []
         if tracks:
@@ -2574,34 +2192,37 @@ def init_chat(ui_language: str) -> None:
     greeting = GREETINGS.get(lang_name, GREETINGS["Italiano"])
     st.session_state["messages"] = [{"role": "assistant", "content": greeting}]
     st.session_state.pop("studio", None)
-    reset_llm_log()
 
 
-def handle_user_input(prompt: str, lang_name: str, lang_code: str) -> None:
-    """Elabora il messaggio utente: conversazione + eventuale costruzione dello studio."""
-    reset_llm_log()
-    add_llm_log("User request", prompt)
+def handle_user_input(
+    prompt: str,
+    lang_name: str,
+    lang_code: str,
+    search_languages: list[str] | None = None,
+) -> None:
+    """Elabora il messaggio utente: conversazione + eventuale costruzione dello studio.
+
+    ``search_languages`` (codici EN/IT/FR/...) limita le lingue delle query Musixmatch
+    (task 6). Vuoto/None => tutte le lingue.
+    """
     st.session_state["messages"].append({"role": "user", "content": prompt})
 
     # Senza LLM mostriamo comunque la struttura della regia con tab/sezioni vuote.
     if not settings.llm_ready:
-        add_llm_log("LLM skipped", "LLM_API_KEY is missing; the reasoning pipeline cannot run.")
         st.session_state["messages"].append(
             {
                 "role": "assistant",
                 "content": "LLM not configured: set `LLM_API_KEY` (and "
                 "`LLM_BASE_URL`/`LLM_MODEL`) in `.env` to populate the studio. "
                 "Showing empty structure for now.",
-                "llm_log": current_llm_log(),
             }
         )
         st.session_state["studio"] = empty_studio(prompt)
         return
 
-    teller = storyteller_for_session()
-    add_llm_log("LLM model", selected_llm_model())
+    teller = Storyteller()
 
-    with st.spinner("Planning Musixmatch search..."):
+    with st.spinner("Searching Musixmatch..."):
         try:
             history = [
                 {"role": m["role"], "content": m["content"]}
@@ -2611,42 +2232,18 @@ def handle_user_input(prompt: str, lang_name: str, lang_code: str) -> None:
                 messages=history,
                 language=lang_name,
                 context=st.session_state.get("context", ""),
-            )
-            queries = plan.get("queries") or []
-            query_details: list[str] = []
-            for query in queries:
-                if not isinstance(query, dict):
-                    continue
-                bits = [
-                    str(query.get("q", "")).strip(),
-                    str(query.get("q_track", "")).strip(),
-                    str(query.get("q_artist", "")).strip(),
-                    str(query.get("q_lyrics", "")).strip(),
-                ]
-                compact = " | ".join(bit for bit in bits if bit)
-                if compact:
-                    query_details.append(compact)
-            add_llm_log(
-                "Search router",
-                f"music_related={plan.get('music_related', True)}, "
-                f"needs_search={plan.get('needs_search', True)}, "
-                f"limit={plan.get('limit', 8)}, "
-                f"query_count={len(query_details)}"
-                + ("\nQueries: " + "; ".join(query_details) if query_details else "")
-                + ("\nFallback: " + str(plan.get("_router_fallback")) if plan.get("_router_fallback") else ""),
+                search_languages=search_languages or None,
             )
         except StorytellerError as exc:
-            add_llm_log("Search router failed", user_facing_llm_error(exc))
             st.session_state["messages"].append(
-                {"role": "assistant", "content": user_facing_llm_error(exc), "llm_log": current_llm_log()}
+                {"role": "assistant", "content": user_facing_llm_error(exc)}
             )
             st.session_state["studio"] = empty_studio(prompt)
             return
 
     if not plan.get("music_related", True):
         key = lang_name if lang_name in REFUSALS else "Italiano"
-        add_llm_log("Scope check", "The request was classified as outside the music domain.")
-        st.session_state["messages"].append({"role": "assistant", "content": REFUSALS[key], "llm_log": current_llm_log()})
+        st.session_state["messages"].append({"role": "assistant", "content": REFUSALS[key]})
         return
 
     if not plan.get("needs_search", True):
@@ -2661,14 +2258,9 @@ def handle_user_input(prompt: str, lang_name: str, lang_code: str) -> None:
                     context=st.session_state.get("context", ""),
                 )
                 text, _ = Storyteller.extract_playlist(content)
-                add_llm_log(
-                    "Conversation response",
-                    "Generated a direct music-domain answer without a Musixmatch search.",
-                )
             except StorytellerError as exc:
-                add_llm_log("Conversation response failed", user_facing_llm_error(exc))
                 st.session_state["messages"].append(
-                    {"role": "assistant", "content": user_facing_llm_error(exc), "llm_log": current_llm_log()}
+                    {"role": "assistant", "content": user_facing_llm_error(exc)}
                 )
                 st.session_state["studio"] = empty_studio(prompt)
                 return
@@ -2676,26 +2268,14 @@ def handle_user_input(prompt: str, lang_name: str, lang_code: str) -> None:
             key = lang_name if lang_name in REFUSALS else "Italiano"
             text = text.replace("[NON_MUSICALE]", "").strip() or REFUSALS[key]
         st.session_state["messages"].append(
-            {"role": "assistant", "content": text, "reasoning": reasoning, "tracks": [], "llm_log": current_llm_log()}
+            {"role": "assistant", "content": text, "reasoning": reasoning, "tracks": []}
         )
         st.session_state["studio"] = empty_studio(prompt)
         return
 
-    with st.spinner("Searching Musixmatch..."):
-        tracks, notes = search_musixmatch_from_plan(plan)
-    add_llm_log(
-        "Musixmatch search",
-        f"Found {len(tracks)} tracks." + ("\n" + "\n".join(notes) if notes else ""),
-    )
-    if tracks:
-        notes.extend(enrich_tracks_with_audiodb_facts(tracks, lang_code))
-        add_llm_log(
-            "TheAudioDB enrichment",
-            f"Processed text context and curiosities for {len(tracks)} tracks."
-            + ("\n" + "\n".join(notes) if notes else ""),
-        )
+    tracks, notes = search_musixmatch_from_plan(plan, lang_name)
 
-    with st.spinner("Rewriting from verified music text..."):
+    with st.spinner("Rewriting from Musixmatch lyrics..."):
         try:
             text, reasoning = teller.compose_musixmatch_response(
                 prompt=prompt,
@@ -2703,24 +2283,18 @@ def handle_user_input(prompt: str, lang_name: str, lang_code: str) -> None:
                 language=lang_name,
                 context=st.session_state.get("context", ""),
             )
-            add_llm_log(
-                "Response writer",
-                "Composed the assistant answer using Musixmatch results and TheAudioDB text context.",
-            )
         except StorytellerError as exc:
-            add_llm_log("Response writer failed", user_facing_llm_error(exc))
-            text = fallback_track_response(prompt, tracks, lang_name)
-            reasoning = "Fallback response generated from verified search results after LLM writer failure."
-            add_llm_log(
-                "Response fallback",
-                "Used a concise local response built from Musixmatch and TheAudioDB results.",
+            st.session_state["messages"].append(
+                {"role": "assistant", "content": user_facing_llm_error(exc), "tracks": tracks}
             )
+            st.session_state["studio"] = build_studio(prompt, tracks, lang_name, lang_code) if tracks else empty_studio(prompt)
+            return
 
     if notes:
         text = text + "\n\n" + "\n".join(f"> {note}" for note in notes)
 
     st.session_state["messages"].append(
-        {"role": "assistant", "content": text, "reasoning": reasoning, "tracks": tracks, "llm_log": current_llm_log()}
+        {"role": "assistant", "content": text, "reasoning": reasoning, "tracks": tracks}
     )
 
     if tracks:
@@ -2735,20 +2309,107 @@ def handle_user_input(prompt: str, lang_name: str, lang_code: str) -> None:
 
 def render_example_prompts(lang_name: str = "Auto") -> None:
     """Renders clickable example prompt cards on the startup page."""
-    st.markdown(
-        '<p class="hero-sub">Music curation &amp; emotional storytelling powered by AI. '
-        'Type a prompt below or pick one of these to get started.</p>',
-        unsafe_allow_html=True,
-    )
-    st.markdown("")
-    prompts = EXAMPLE_PROMPTS.get(lang_name, EXAMPLE_PROMPTS["Auto"])
-    cols = st.columns(3)
+    prompts = EXAMPLE_PROMPTS.get(lang_name, EXAMPLE_PROMPTS["Auto"])[:3]
     for i, (icon, text) in enumerate(prompts):
-        with cols[i % 3]:
-            if st.button(f"{icon}  {text}", key=f"_ex_{i}", use_container_width=True):
-                st.session_state["_pending_example"] = text
-                st.rerun()
-    st.markdown("")
+        if st.button(f"{icon}  {text}", key=f"_ex_{i}", use_container_width=True):
+            st.session_state["_pending_example"] = text
+            st.rerun()
+
+
+# --------------------------------------------------------------------------- #
+# Task 10: consigli di esplorazione basati sugli ascolti reali Spotify
+# --------------------------------------------------------------------------- #
+def fetch_spotify_top_listening() -> dict[str, Any] | None:
+    """Legge i top artisti/brani/generi dell'utente dalla Spotify Web API.
+
+    Richiede lo scope ``user-top-read``. Ritorna ``None`` se non connesso o in caso
+    di errore; ritorna ``{"_no_scope": True}`` se il token non ha lo scope (l'utente
+    deve rifare il login per concederlo).
+    """
+    token = spotify_token()
+    if not token:
+        return None
+    headers = {"Authorization": f"Bearer {token}"}
+    artists: list[str] = []
+    genres: list[str] = []
+    tracks: list[str] = []
+    try:
+        ra = requests.get(
+            "https://api.spotify.com/v1/me/top/artists?limit=20&time_range=medium_term",
+            headers=headers,
+            timeout=10,
+        )
+        if ra.status_code in (401, 403):
+            return {"_no_scope": True}
+        if ra.ok:
+            for a in ra.json().get("items", []):
+                if a.get("name"):
+                    artists.append(a["name"])
+                genres.extend(a.get("genres", []) or [])
+        rt = requests.get(
+            "https://api.spotify.com/v1/me/top/tracks?limit=20&time_range=medium_term",
+            headers=headers,
+            timeout=10,
+        )
+        if rt.ok:
+            for t in rt.json().get("items", []):
+                name = t.get("name", "")
+                performers = ", ".join(a.get("name", "") for a in t.get("artists", []))
+                if name:
+                    tracks.append(f"{name} — {performers}".strip(" —"))
+    except requests.RequestException:
+        return None
+    # Dedup generi mantenendo l'ordine.
+    seen: set[str] = set()
+    genres = [g for g in genres if g and not (g in seen or seen.add(g))]
+    if not (artists or tracks or genres):
+        return None
+    return {"artists": artists, "genres": genres, "tracks": tracks}
+
+
+def get_spotify_theme_recs(lang_name: str) -> list[str]:
+    """Deriva (e mette in cache di sessione) temi narrativi dagli ascolti Spotify."""
+    if not settings.llm_ready or not spotify_token():
+        return []
+    if "sp_theme_recs" in st.session_state:
+        return st.session_state["sp_theme_recs"]
+    data = fetch_spotify_top_listening()
+    if not data or data.get("_no_scope"):
+        st.session_state["sp_theme_recs"] = []
+        st.session_state["sp_theme_recs_no_scope"] = bool(data and data.get("_no_scope"))
+        return []
+    try:
+        themes = Storyteller().suggest_listening_themes(
+            artists=data.get("artists", []),
+            tracks=data.get("tracks", []),
+            genres=data.get("genres", []),
+            language=lang_name,
+        )
+    except StorytellerError:
+        themes = []
+    st.session_state["sp_theme_recs"] = themes
+    return themes
+
+
+def render_spotify_theme_recs(lang_name: str) -> None:
+    """Mostra pulsanti-tema costruiti sugli ascolti reali dell'utente (task 10)."""
+    if not spotify_token() or not settings.llm_ready:
+        return
+    with st.spinner("Reading your Spotify listening…"):
+        themes = get_spotify_theme_recs(lang_name)
+    if st.session_state.get("sp_theme_recs_no_scope"):
+        st.caption(
+            "Reconnect Spotify (Disconnect → Login) to grant *top listening* access "
+            "and get recommendations based on what you actually listen to."
+        )
+        return
+    if not themes:
+        return
+    st.markdown("##### 🎧 Inspired by your Spotify listening")
+    for i, theme in enumerate(themes):
+        if st.button(f"✨  {theme}", key=f"_sprec_{i}", use_container_width=True):
+            st.session_state["_pending_example"] = theme
+            st.rerun()
 
 
 # --------------------------------------------------------------------------- #
@@ -2783,17 +2444,19 @@ def main() -> None:
         )
         st.sidebar.markdown('<hr style="border-color:rgba(255,255,255,.08);margin:6px 0 10px 0;">', unsafe_allow_html=True)
 
-    ui_language = st.sidebar.selectbox("🌍 Narration language", list(LANGUAGES.keys()), index=0)
+    # Task 5: la lingua di narrazione è SEMPRE auto-rilevata dal modello dalla
+    # conversazione. Nessun selettore manuale: usiamo sempre il comportamento "Auto".
+    ui_language = "🌐 Auto"
     lang_name, lang_code = LANGUAGES[ui_language]
-    if lang_name == "Auto":
-        st.sidebar.caption("Auto mode: I'll reply in the language of your message.")
+    st.sidebar.caption(
+        "🌍 Narration language: **Auto** — I'll narrate in the language of your message."
+    )
 
     if st.sidebar.button("➕ New chat", use_container_width=True):
         init_chat(ui_language)
 
     # Sidebar
     render_status_sidebar()
-    render_llm_model_selector()
     render_spotify_login(st.sidebar)
     st.sidebar.markdown("---")
 
@@ -2813,7 +2476,7 @@ def main() -> None:
             if st.button("Remove context", use_container_width=True):
                 st.session_state["context"] = ""
 
-    st.sidebar.caption(f"LLM model: `{selected_llm_model()}`")
+    st.sidebar.caption(f"LLM model: `{settings.llm_model}`")
 
     # Stato chat
     if "messages" not in st.session_state:
@@ -2824,24 +2487,9 @@ def main() -> None:
     studio_has_tracks = bool(
         st.session_state.get("studio") and st.session_state["studio"].get("tracks")
     )
-    if not studio_has_tracks:
-        # Handle example prompt clicked on previous run.
-        if st.session_state.get("_pending_example"):
-            pending = st.session_state.pop("_pending_example")
-            handle_user_input(pending, lang_name, lang_code)
-            if st.session_state.get("studio", {}).get("tracks"):
-                st.rerun()
-        prompt = st.chat_input("Type here… what would you like to talk about?")
-        if prompt:
-            handle_user_input(prompt, lang_name, lang_code)
-            # Rerun immediato cosi' la barra della chat sparisce davvero.
-            if st.session_state.get("studio", {}).get("tracks"):
-                st.rerun()
 
     studio = st.session_state.get("studio")
     has_tracks = bool(studio and studio.get("tracks"))
-    if has_tracks:
-        handle_embedded_tts_request(studio)
 
     # --- Barra superiore: solo il titolo del progetto ---
     logo_b64 = _logo_b64("logo_text.png")
@@ -2858,16 +2506,56 @@ def main() -> None:
     if has_tracks:
         # Studio pieno: mostra solo il titolo del prompt e la regia.
         render_studio_title(studio["prompt"])
-        render_llm_log(studio.get("llm_log"))
     else:
         st.markdown('<hr class="hr-glow">', unsafe_allow_html=True)
+
+        # Input + consigli subito dopo il logo, prima dei messaggi.
+        if not studio_has_tracks:
+            # Task 6: lingue in cui cercare i brani (default = tutte). La selezione
+            # persiste tra i rerun tramite la key di sessione.
+            label_to_code = dict(SEARCH_LANGUAGE_OPTIONS)
+            selected_labels = st.session_state.get("search_lang_labels", [])
+            search_languages = [
+                label_to_code[label]
+                for label in selected_labels
+                if label in label_to_code
+            ]
+
+            if st.session_state.get("_pending_example"):
+                pending = st.session_state.pop("_pending_example")
+                handle_user_input(pending, lang_name, lang_code, search_languages)
+                if st.session_state.get("studio", {}).get("tracks"):
+                    st.rerun()
+
+            typed = st.text_input(
+                "",
+                placeholder="Type here… what would you like to talk about?",
+                key="_main_input",
+                label_visibility="collapsed",
+            )
+            st.multiselect(
+                "🌐 Search songs in these languages",
+                options=[label for label, _ in SEARCH_LANGUAGE_OPTIONS],
+                key="search_lang_labels",
+                placeholder="All languages (default)",
+                help="Limit the languages used when searching lyrics on Musixmatch. "
+                "Leave empty to search in every language.",
+            )
+            if typed:
+                st.session_state.pop("_main_input", None)
+                handle_user_input(typed, lang_name, lang_code, search_languages)
+                if st.session_state.get("studio", {}).get("tracks"):
+                    st.rerun()
+
+            if len(st.session_state.get("messages", [])) <= 1:
+                render_spotify_theme_recs(lang_name)
+                render_example_prompts(lang_name)
+
         # Mostra i messaggi della conversazione (indice 0 = saluto iniziale, nascosto).
         for i, msg in enumerate(st.session_state.get("messages", [])):
             if i == 0:
                 continue  # saluto iniziale: rimane nel contesto LLM ma non viene mostrato
             render_message(i, msg)
-        if len(st.session_state.get("messages", [])) <= 1:
-            render_example_prompts(lang_name)
 
     # --- Regia a 3 colonne (occupa tutta la schermata) ---
     # Mostrata solo quando il modello ha restituito una playlist con brani.
@@ -2877,9 +2565,11 @@ def main() -> None:
                 "Log in to your Spotify in the sidebar to enable the player "
                 "and add the playlist to your profile."
             )
-        render_studio_component(studio)
+        render_studio_component(studio, TTS_LANG.get(ui_language, ""))
         # Sezioni informative (scorrendo verso il basso)
         render_studio_sections(studio)
+        # Task 8: statistiche e grafici di streaming reali (Songstats) a fondo pagina.
+        render_songstats_section(studio)
 
 
 if __name__ == "__main__":

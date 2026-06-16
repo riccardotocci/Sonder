@@ -32,6 +32,7 @@ class SpotifyTrack:
     url: str = ""
     preview_url: str = ""
     album_image: str = ""
+    popularity: int = 0
     raw: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -45,6 +46,7 @@ class SpotifyTrack:
             url=item.get("external_urls", {}).get("spotify", ""),
             preview_url=item.get("preview_url") or "",
             album_image=images[0]["url"] if images else "",
+            popularity=int(item.get("popularity", 0) or 0),
             raw=item,
         )
 
@@ -120,20 +122,100 @@ class SpotifyClient:
     # ------------------------------------------------------------------ #
     # Ricerca
     # ------------------------------------------------------------------ #
-    def search_track(self, title: str, artist: Optional[str] = None) -> Optional[SpotifyTrack]:
-        """Cerca la traccia piu' pertinente per titolo (+ artista)."""
-        query = f'track:{title}'
-        if artist:
-            query += f' artist:{artist}'
+    @staticmethod
+    def _normalize(text: str) -> str:
+        """Normalizza un titolo/artista per il confronto: minuscole, niente parentesi,
+        suffissi (remaster, live, feat...) e punteggiatura rimossi."""
+        text = (text or "").lower()
+        # Rimuovi contenuti tra parentesi/quadre: (feat...), [remaster], ecc.
+        text = re.sub(r"[\(\[].*?[\)\]]", " ", text)
+        # Rimuovi suffissi dopo trattino: "- Remastered 2011", "- Live".
+        text = re.sub(r"\s-\s.*$", " ", text)
+        # Rimuovi marcatori feat./with.
+        text = re.sub(r"\b(feat|ft|featuring|with)\b.*$", " ", text)
+        text = re.sub(r"[^\w\s]", " ", text)
+        return re.sub(r"\s+", " ", text).strip()
+
+    def _score(self, candidate: SpotifyTrack, title: str, artist: str) -> float:
+        """Punteggio di pertinenza candidato vs metadati canonici (0..1)."""
+        want_title = self._normalize(title)
+        want_artist = self._normalize(artist)
+        cand_title = self._normalize(candidate.name)
+        cand_artist = self._normalize(candidate.artist)
+        score = 0.0
+        if want_title and (want_title == cand_title):
+            score += 0.6
+        elif want_title and (want_title in cand_title or cand_title in want_title):
+            score += 0.4
+        if want_artist:
+            if want_artist == cand_artist:
+                score += 0.4
+            elif want_artist in cand_artist or cand_artist in want_artist:
+                score += 0.25
+        else:
+            score += 0.2
+        # Leggero bonus per popolarita' (preferisce la versione piu' nota a parita').
+        score += min(candidate.popularity, 100) / 1000.0
+        return score
+
+    def _search_raw(self, query: str, limit: int = 5) -> list[SpotifyTrack]:
         try:
-            results = self.public_client.search(q=query, type="track", limit=1)
+            results = self.public_client.search(q=query, type="track", limit=limit)
         except SpotifyError:
             raise
         except Exception as exc:  # noqa: BLE001
             raise SpotifyError(f"Errore ricerca Spotify: {exc}") from exc
+        items = results.get("tracks", {}).get("items", []) or []
+        return [SpotifyTrack.from_api(it) for it in items]
 
-        items = results.get("tracks", {}).get("items", [])
-        return SpotifyTrack.from_api(items[0]) if items else None
+    def search_track(self, title: str, artist: Optional[str] = None) -> Optional[SpotifyTrack]:
+        """Cerca la traccia piu' pertinente per titolo (+ artista) con piu' strategie.
+
+        Usa i metadati canonici (titolo/artista corretti da Musixmatch) ed esegue
+        tentativi progressivamente piu' permissivi, scegliendo il candidato con il
+        punteggio di somiglianza migliore. Riduce i brani "non trovati".
+        """
+        title = (title or "").strip()
+        artist = (artist or "").strip()
+        if not title:
+            return None
+
+        norm_title = self._normalize(title)
+        norm_artist = self._normalize(artist)
+
+        # Strategie in ordine: dalla piu' precisa alla piu' permissiva.
+        queries: list[str] = []
+        if artist:
+            queries.append(f'track:"{title}" artist:"{artist}"')
+            queries.append(f'track:{norm_title} artist:{norm_artist}')
+            queries.append(f'{title} {artist}')
+        queries.append(f'track:"{title}"')
+        queries.append(title)
+
+        best: Optional[SpotifyTrack] = None
+        best_score = 0.0
+        seen_queries: set[str] = set()
+        for query in queries:
+            if query in seen_queries:
+                continue
+            seen_queries.add(query)
+            try:
+                candidates = self._search_raw(query, limit=5)
+            except SpotifyError:
+                raise
+            for cand in candidates:
+                if not cand.uri:
+                    continue
+                score = self._score(cand, title, artist)
+                if score > best_score:
+                    best, best_score = cand, score
+            # Match forte: titolo e artista combaciano -> ci fermiamo.
+            if best_score >= 0.9:
+                break
+        # Accetta solo se c'e' una somiglianza minima sul titolo.
+        if best and best_score >= 0.4:
+            return best
+        return best  # eventuale miglior tentativo (può essere None)
 
     def resolve_tracks(self, tracks: list[dict[str, str]]) -> list[SpotifyTrack]:
         """Converte una lista di {title, artist} in tracce Spotify trovate."""
