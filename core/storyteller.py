@@ -122,8 +122,11 @@ MUSIXMATCH_SEARCH_TEMPLATE = """Prepara query Musixmatch concise. Rispondi SOLO 
 Lingua: {language_rule}
 
 Lingue di ricerca consentite (codici): {search_languages}
-- Genera q_lyrics SOLO in queste lingue. Per OGNI query indica il campo "lang" con il codice della
-  sua lingua (uno tra quelli consentiti). NON produrre query in lingue non consentite.
+- Le 20 query DEVONO essere DISTRIBUITE e BILANCIATE tra TUTTE le lingue consentite qui sopra,
+  non concentrate in una sola: se sono consentite più lingue, produci all'incirca lo stesso numero
+  di query per ciascuna lingua. NON generare tutte le query nella lingua del messaggio dell'utente.
+- Ogni singola query è in UNA sola lingua: indica il campo "lang" con il suo codice (uno tra quelli
+  consentiti) e scrivi q_lyrics interamente in quella lingua. NON produrre query in lingue non consentite.
 
 Messaggi:
 {messages}
@@ -178,31 +181,19 @@ Parafrasa, non copiare versi lunghi.
 Se non ci sono risultati, chiedi una richiesta piu' precisa."""
 
 
-STUDIO_BRIEF_TEMPLATE = """Sei la voce narrante di uno studio musicale d'autore. Scrivi una regia audio \
-APPROFONDITA ed ESAUSTIVA per: "{title}".
+STUDIO_BRIEF_TEMPLATE = """Crea una regia audio concisa per: "{title}".
 
 Brani (nell'ordine):
 {tracks}
 
-Per OGNI brano scrivi, in {language}, un campo "speech": un'analisi ricca e densa (160-240 parole) \
-in prosa continua, pensata per essere letta ad alta voce, che intreccia in un unico discorso:
-- TESTO: cita o parafrasa almeno DUE versi o immagini CONCRETE del brano e decodificane il \
-significato poetico, le metafore, lo slang, i simboli e il sottotesto psicologico.
-- ARTISTA e CONTESTO: collega il brano al percorso dell'artista, all'album e al momento \
-storico/culturale, dando priorità prima alle notizie specifiche sul brano, poi sull'album, poi \
-alla descrizione dell'artista.
-- LETTURA PSICOLOGICA: tensioni interiori, archetipo emotivo, e perché questo brano risponde alla \
-richiesta "{title}".
+Per ogni brano scrivi DUE parti separate in {language}:
+- musixmatch_speech: 25-40 parole basate solo sul testo/richsync e sul motivo ricerca.
+- audiodb_speech: 25-40 parole basate su contesto esterno ordinato così: prima notizie specifiche/curiosità sul brano, poi notizie sull'album, poi descrizione dell'artista.
+Non mescolare le fonti. Non inventare.
+Non scrivere mai i nomi delle fonti dentro i testi generati.
+Per audiodb_speech usa il primo livello disponibile nell'ordine indicato; non partire dall'artista se esistono dettagli sul brano o sull'album.
 
-Regole ferree:
-- NON inventare dati biografici, date, luoghi o fatti: usa SOLO il contesto fornito per ciascun \
-brano. Se un'informazione non è presente, non dichiararla e resta sul testo.
-- NON scrivere MAI i nomi delle fonti (Musixmatch, TheAudioDB, Spotify, Last.fm) dentro lo "speech".
-- Cita i versi in forma breve o parafrasata: non copiare lunghe porzioni di testo.
-- "speech" deve essere prosa scorrevole, senza elenchi puntati né intestazioni.
-
-Aggiungi per ogni brano: "mood" (1-3 parole), "origin" (città/paese d'origine dell'artista) e le \
-coordinate decimali "lat"/"lng" di quell'origine.
+Aggiungi per ogni brano: "mood" (1-3 parole), "origin" (città/paese d'origine dell'artista) e le coordinate decimali "lat"/"lng" di quell'origine.
 
 Rispondi SOLO JSON valido:
 {{
@@ -210,7 +201,8 @@ Rispondi SOLO JSON valido:
     {{
       "title": "...",
       "artist": "...",
-      "speech": "...",
+      "musixmatch_speech": "...",
+      "audiodb_speech": "...",
       "mood": "...",
       "origin": "...",
       "lat": <latitudine decimale dell'origine>,

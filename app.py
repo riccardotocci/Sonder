@@ -13,6 +13,7 @@ import functools
 import html
 import json
 import logging
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -196,6 +197,28 @@ def _plan_translation_lang(
     if narration:
         return narration
     return musixmatch_translation_code(lang_name, lang_code)
+
+
+def _detect_narration_lang(text: str) -> str:
+    """Rileva la lingua del messaggio utente e la mappa a un codice Musixmatch.
+
+    Fallback quando il router LLM non popola ``narration_lang`` (il modello gratuito
+    spesso lo omette): così narrazione e traduzione del testo seguono la lingua in cui
+    l'utente ha scritto. Ritorna '' se la rilevazione fallisce, il testo è troppo corto
+    o la lingua non è supportata (il chiamante ripiega su lingua UI / inglese).
+    """
+    cleaned = " ".join(str(text or "").split())
+    if len(cleaned) < 3:
+        return ""
+    try:
+        from langdetect import detect  # import locale: degrada se la dipendenza manca
+    except Exception:
+        return ""
+    try:
+        return _normalize_mxm_lang(detect(cleaned))
+    except Exception:
+        return ""
+
 
 # Saluto iniziale della chat per ciascuna lingua (per "Auto" usiamo un saluto bilingue).
 GREETINGS: dict[str, str] = {
@@ -842,6 +865,24 @@ def musixmatch_track_payload(
         "has_lyrics": track.has_lyrics,
         "has_richsync": track.has_richsync,
     }
+
+
+def strip_narration_source_label(text: str) -> str:
+    """Rimuove un eventuale prefisso 'Musixmatch:'/'TheAudioDB:' generato dall'LLM."""
+    return re.sub(
+        r"^\s*(?:\*\*)?\s*(?:musixmatch|theaudiodb|audio\s*db)\s*(?:\*\*)?\s*[:\-–—]?\s*",
+        "",
+        text or "",
+        flags=re.IGNORECASE,
+    ).strip()
+
+
+def compact_text(text: str, limit: int = 360) -> str:
+    """Comprime spazi e taglia il testo a ``limit`` caratteri senza spezzare parole."""
+    text = " ".join((text or "").split())
+    if len(text) <= limit:
+        return text
+    return text[:limit].rsplit(" ", 1)[0].rstrip(".,;:") + "..."
 
 
 # --------------------------------------------------------------------------- #
@@ -1628,7 +1669,31 @@ def build_studio(
         narrations = brief.get("narrations") or []
         for i, t in enumerate(enriched):
             n = narrations[i] if i < len(narrations) else {}
-            t["speech"] = str(n.get("speech", "")).strip()
+            # Issue 5: due discorsi distinti (come ieri sera) — uno fondato sul testo
+            # Musixmatch, uno sul contesto esterno TheAudioDB (brano > album > artista).
+            # Se l'LLM non li produce, si ripiega sul materiale grezzo già raccolto.
+            musixmatch_speech = strip_narration_source_label(str(n.get("musixmatch_speech", "")).strip())
+            audiodb_speech = strip_narration_source_label(str(n.get("audiodb_speech", "")).strip())
+            if not musixmatch_speech:
+                musixmatch_source = str(t.get("lyrics") or t.get("reason") or "").strip()
+                if musixmatch_source:
+                    musixmatch_speech = compact_text(musixmatch_source, 220)
+            if not audiodb_speech:
+                audiodb_source = str(
+                    t.get("audio_db_song_news")
+                    or t.get("audio_db_album_news")
+                    or t.get("audio_db_artist_description")
+                    or t.get("audio_db_text")
+                    or t.get("audio_db_fact")
+                    or t.get("_bio")
+                    or ""
+                ).strip()
+                if audiodb_source:
+                    audiodb_speech = compact_text(audiodb_source, 220)
+            combined_speech = " ".join(part for part in (musixmatch_speech, audiodb_speech) if part).strip()
+            t["musixmatch_speech"] = musixmatch_speech
+            t["audiodb_speech"] = audiodb_speech
+            t["speech"] = combined_speech
             t["mood"] = str(n.get("mood", "")).strip()
             t["origin"] = str(n.get("origin", "")).strip()
             try:
@@ -1647,6 +1712,8 @@ def build_studio(
     for t in enriched:
         t.pop("_bio", None)
         t.setdefault("speech", "")
+        t.setdefault("musixmatch_speech", "")
+        t.setdefault("audiodb_speech", "")
         t.setdefault("mood", "")
         t.setdefault("origin", "")
         t.setdefault("lat", None)
@@ -1993,7 +2060,15 @@ STUDIO_HTML = """
     if (t.origin) bits.push('📍 ' + t.origin);
     if (t.mood) bits.push(t.mood);
     cMeta.textContent = bits.filter(Boolean).join('  ·  ');
-    cSpeech.textContent = t.speech || (t.reason || 'No speech available for this track.');
+    const musix = (t.musixmatch_speech || '').trim();
+    const adb = (t.audiodb_speech || '').trim();
+    if (musix || adb) {
+      cSpeech.innerHTML =
+        (musix ? '<div>' + esc(musix) + '</div>' : '') +
+        (adb ? '<div style="margin-top:12px;">' + esc(adb) + '</div>' : '');
+    } else {
+      cSpeech.textContent = t.speech || (t.reason || 'No speech available for this track.');
+    }
     showLyrics(i);
     prepareTrackPlayer(i);
   }
@@ -2139,7 +2214,15 @@ STUDIO_HTML = """
       }
       if (!was && i === idx) changed = true;
     });
-    if (changed && lines[idx]) lines[idx].scrollIntoView({ block: 'center', behavior: 'smooth' });
+    // Task 1: scrolla SOLO la finestra del testo (non l'intera pagina/iframe).
+    // scrollIntoView risalirebbe agli antenati scrollabili: usiamo box.scrollTo
+    // calcolando la posizione centrata della riga attiva dentro #lyrics-box.
+    if (changed && lines[idx]) {
+      const target = lines[idx];
+      const targetTop = target.offsetTop - box.offsetTop;
+      const centeredTop = targetTop - (box.clientHeight / 2) + (target.clientHeight / 2);
+      box.scrollTo({ top: Math.max(0, centeredTop), behavior: 'smooth' });
+    }
   }
 
   // ---- Spotify Web API helpers (token personale dell'utente) ----
@@ -2479,6 +2562,8 @@ def render_studio_component(studio: dict, tts_lang: str) -> None:
             "title": t.get("title", ""),
             "artist": t.get("artist", ""),
             "speech": t.get("speech", ""),
+            "musixmatch_speech": t.get("musixmatch_speech", ""),
+            "audiodb_speech": t.get("audiodb_speech", ""),
             "mood": t.get("mood", ""),
             "origin": t.get("origin", ""),
             "reason": t.get("reason", ""),
@@ -2797,6 +2882,13 @@ def handle_user_input(
                 context=st.session_state.get("context", ""),
                 search_languages=search_languages or None,
             )
+            # Issue 4: se il router LLM non ha indicato la lingua di narrazione,
+            # rilevala dal messaggio utente così narrazione e traduzione del testo
+            # seguono la lingua in cui ha scritto (non l'inglese di default).
+            if not str(plan.get("narration_lang", "")).strip():
+                detected_lang = _detect_narration_lang(prompt)
+                if detected_lang:
+                    plan["narration_lang"] = detected_lang
             queries = plan.get("queries") or []
             query_details: list[str] = []
             for query in queries:

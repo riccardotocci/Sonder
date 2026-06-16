@@ -13,3 +13,6 @@ spotipy>=2.24.0
 
 # Caricamento variabili d'ambiente dal file .env
 python-dotenv>=1.0.0
+
+# Rilevamento lingua del messaggio utente (lingua di narrazione/traduzione)
+langdetect>=1.0.9
