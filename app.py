@@ -15,6 +15,7 @@ import json
 import logging
 import re
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -79,6 +80,55 @@ def _persistent_token_store() -> dict[str, object]:
 def _stay_logged_store() -> dict[str, bool]:
     """Mappa state -> stay_logged; sopravvive al redirect OAuth verso Spotify."""
     return {}
+
+
+
+@st.cache_resource
+def _studio_store() -> dict[str, object]:
+    """Store degli studio attivi: sopravvive ai reload full-page del TTS lazy."""
+    return {}
+
+
+def _ensure_studio_id(studio: dict) -> str:
+    """Assegna un id stabile allo studio corrente, usato dal giro lazy dell'iframe."""
+    studio_id = str(studio.get("_studio_id", "") or "").strip()
+    if not studio_id:
+        studio_id = uuid.uuid4().hex
+        studio["_studio_id"] = studio_id
+    return studio_id
+
+
+def remember_studio(studio: dict | None) -> str:
+    """Salva lo studio nel processo Streamlit per recuperarlo dopo un reload."""
+    if not studio or not studio.get("tracks"):
+        return ""
+    studio_id = _ensure_studio_id(studio)
+    store = _studio_store()
+    store[studio_id] = studio
+    store["_last_id"] = studio_id
+    st.session_state["_sonder_studio_id"] = studio_id
+    studio_ids = [key for key in store if not str(key).startswith("_")]
+    for old_id in studio_ids[:-20]:
+        store.pop(old_id, None)
+    return studio_id
+
+
+def restore_studio_for_tts_request() -> dict | None:
+    """Ripristina lo studio richiesto dall'iframe se il reload ha creato una sessione nuova."""
+    if not _query_param_value("sonder_tts_track"):
+        return None
+    studio_id = (
+        _query_param_value("sonder_studio_id")
+        or str(st.session_state.get("_sonder_studio_id", "") or "")
+    ).strip()
+    if not studio_id:
+        return None
+    studio = _studio_store().get(studio_id)
+    if isinstance(studio, dict) and studio.get("tracks"):
+        st.session_state["studio"] = studio
+        st.session_state["_sonder_studio_id"] = studio_id
+        return studio
+    return None
 
 # Lingua UI -> (nome per il prompt LLM, codice biografia TheAudioDB)
 # "🌐 Auto" => il modello riconosce automaticamente la lingua dell'utente.
@@ -1375,7 +1425,18 @@ def _streamlit_cloud_url_configured() -> bool:
         context_url = ""
     if context_url:
         urls.append(context_url)
+    try:
+        headers = getattr(getattr(st, "context", None), "headers", {}) or {}
+        for name in ("host", "x-forwarded-host", "origin", "referer"):
+            value = headers.get(name) if hasattr(headers, "get") else ""
+            if value:
+                urls.append(str(value))
+    except Exception:
+        pass
     for raw_url in urls:
+        raw_url = str(raw_url or "").strip()
+        if raw_url and "://" not in raw_url:
+            raw_url = "https://" + raw_url
         try:
             hostname = urlparse(raw_url).hostname or ""
         except Exception:
@@ -1471,6 +1532,7 @@ def _clear_tts_query_params() -> None:
         "sonder_tts_order",
         "sonder_tts_pos",
         "sonder_tts_nonce",
+        "sonder_studio_id",
     ):
         if key in st.query_params:
             del st.query_params[key]
@@ -1492,8 +1554,8 @@ def handle_embedded_tts_request(studio: dict) -> None:
     """Genera UN clip ElevenLabs richiesto dall'iframe (modalità embedded/hosting).
 
     L'iframe naviga il parent con ``?sonder_tts_track=i`` quando serve l'audio del
-    brano *i*; qui lo generiamo lato server, salviamo lo stato di autoplay e facciamo
-    rerun: al reload l'iframe riprende la riproduzione di quel brano (ora con audio).
+    brano *i*; qui lo generiamo lato server, salviamo lo stato del brano e facciamo
+    rerun: al reload l'iframe torna su quel brano con l'audio gia' incorporato.
     """
     raw_index = _query_param_value("sonder_tts_track")
     if not raw_index:
@@ -1535,6 +1597,7 @@ def handle_embedded_tts_request(studio: dict) -> None:
                 )
 
     if audio_ready:
+        remember_studio(studio)
         st.session_state["_sonder_tts_autoplay"] = {
             "index": index,
             "seq": seq,
@@ -1956,13 +2019,14 @@ STUDIO_HTML = """
   const TTSLANG = __TTSLANG__;
   const TOKEN = __TOKEN__;
   const PLAYLIST_NAME = __PLAYLIST__;
+    const STUDIO_ID = __STUDIO_ID__;
   // Task 1: endpoint TTS locale per generare la narrazione ElevenLabs ON-DEMAND,
   // un clip alla volta. Vuoto => fallback alla Web Speech API del browser.
   const TTS_ENDPOINT = __TTS_ENDPOINT__;
   const TTS_TOKEN = __TTS_TOKEN__;
-  // Task 4: modalità di consegna audio ('local' = endpoint loopback, 'embedded' =
-  // generazione server-side via rerun in hosting, 'off' = Web Speech) e stato di
-  // autoplay quando si rientra dopo aver generato l'audio embedded di un brano.
+    // Task 4: modalità di consegna audio ('local' = endpoint loopback, 'embedded' =
+    // generazione server-side via rerun in hosting, 'off' = Web Speech) e stato del
+    // brano preparato quando si rientra dopo aver generato l'audio embedded.
   const TTS_MODE = __TTS_MODE__;
   const AUTOPLAY = __AUTOPLAY__;
   // Task 2: tolleranza (secondi) per l'allineamento del richsync (anticipo highlight).
@@ -2448,6 +2512,7 @@ STUDIO_HTML = """
     url.searchParams.set('sonder_tts_order', activeOrder.join(','));
     url.searchParams.set('sonder_tts_pos', String(Math.max(0, seqPos)));
     url.searchParams.set('sonder_tts_nonce', String(Date.now()));
+    if (STUDIO_ID) url.searchParams.set('sonder_studio_id', STUDIO_ID);
     setStatus('🗣️ Generating ElevenLabs narration…');
     try { window.parent.location.href = url.toString(); }
     catch (e) { window.location.href = url.toString(); }
@@ -2623,7 +2688,10 @@ STUDIO_HTML = """
     }
     if (TRACKS.length) {
         // Task 4: se rientriamo dopo aver generato l'audio embedded di un brano,
-        // AUTOPLAY indica quale brano riprendere (e in quale ordine/sequenza).
+        // AUTOPLAY indica quale brano mostrare. Non avviamo l'audio automaticamente:
+        // dopo un full-page reload il browser puo' bloccare play() perche' non e'
+        // piu' dentro il gesto utente originale. Il click successivo riproduce il
+        // base64 gia' pronto, senza rigenerarlo.
         const ap = (AUTOPLAY && typeof AUTOPLAY === 'object') ? AUTOPLAY : {};
         const apIndex = Number.isInteger(ap.index) ? ap.index : -1;
         if (apIndex >= 0 && apIndex < TRACKS.length) {
@@ -2633,7 +2701,7 @@ STUDIO_HTML = """
             current = apIndex;
             highlight(apIndex);
             showCenter(apIndex);
-            setTimeout(() => runTrack(apIndex, true, autoSeq), 250);
+            setStatus('ElevenLabs narration ready - press Play again.');
         } else {
             current = 0;
             highlight(0);
@@ -2650,6 +2718,7 @@ STUDIO_HTML = """
 def render_studio_component(studio: dict, tts_lang: str) -> None:
     """Renderizza la regia a 3 colonne con sintesi vocale e player Spotify per-utente."""
     tracks = studio.get("tracks", [])
+    studio_id = remember_studio(studio)
     payload = [
         {
             "title": t.get("title", ""),
@@ -2709,6 +2778,7 @@ def render_studio_component(studio: dict, tts_lang: str) -> None:
         .replace("__TTS_ENDPOINT__", json.dumps(tts_endpoint))
         .replace("__TTS_TOKEN__", json.dumps(tts_token))
         .replace("__TTS_MODE__", json.dumps(tts_label))
+        .replace("__STUDIO_ID__", json.dumps(studio_id))
         .replace("__AUTOPLAY__", json.dumps(autoplay))
     )
     components.html(rendered, height=860, scrolling=False)
@@ -3288,6 +3358,8 @@ def main() -> None:
     # Stato chat
     if "messages" not in st.session_state:
         init_chat(ui_language)
+
+    restore_studio_for_tts_request()
 
     # Input utente: visibile finche' lo studio non ha brani.
     # Se il modello risponde senza playlist (es. Gemma), la chat rimane aperta.

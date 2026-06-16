@@ -5,6 +5,8 @@ into multilingual emotional storytelling: it chains Musixmatch → TheAudioDB/La
 OpenAI-compatible LLM → ElevenLabs narration → Spotify playback. See [README.md](README.md) for the
 product overview, data-flow diagram, and the full API-key table.
 
+Development site: https://sonder.streamlit.app
+
 ## Run & validate
 
 ```bash

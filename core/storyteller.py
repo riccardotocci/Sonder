@@ -187,8 +187,8 @@ Brani (nell'ordine):
 {tracks}
 
 Per ogni brano scrivi DUE parti separate in {language}:
-- musixmatch_speech: 70-80 parole basate solo sul testo/richsync e sul motivo ricerca.
-- audiodb_speech: 70-80 parole basate su contesto esterno ordinato così: prima notizie specifiche/curiosità sul brano, poi notizie sull'album, poi descrizione dell'artista.
+- musixmatch_speech: 60-70 parole basate solo sul testo/richsync e sul motivo ricerca.
+- audiodb_speech: 40-50 parole basate su contesto esterno ordinato così: prima notizie specifiche/curiosità sul brano, poi notizie sull'album, poi descrizione dell'artista.
 Non mescolare le fonti. Non inventare.
 Non scrivere mai i nomi delle fonti dentro i testi generati.
 Per audiodb_speech usa il primo livello disponibile nell'ordine indicato; non partire dall'artista se esistono dettagli sul brano o sull'album.
