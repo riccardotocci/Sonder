@@ -76,6 +76,7 @@ class SpotifyClient:
         client_secret: Optional[str] = None,
         redirect_uri: Optional[str] = None,
         cache_path: str = ".cache-spotify",
+        access_token: Optional[str] = None,
     ) -> None:
         self.client_id = client_id if client_id is not None else settings.spotify_client_id
         self.client_secret = (
@@ -83,8 +84,12 @@ class SpotifyClient:
         )
         self.redirect_uri = redirect_uri or settings.spotify_redirect_uri
         self.cache_path = cache_path
+        # Token utente (flusso PKCE): se presente abilita la ricerca col solo
+        # CLIENT_ID pubblico, senza CLIENT_SECRET.
+        self.access_token = access_token or None
         self._public: Optional[spotipy.Spotify] = None
         self._user: Optional[spotipy.Spotify] = None
+        self._search: Optional[spotipy.Spotify] = None
 
     # ------------------------------------------------------------------ #
     # Client factory
@@ -106,6 +111,20 @@ class SpotifyClient:
             )
             self._public = spotipy.Spotify(auth_manager=auth)
         return self._public
+
+    @property
+    def search_client(self) -> spotipy.Spotify:
+        """Client read-only per la ricerca brani / risoluzione ISRC.
+
+        Preferisce il token utente (flusso PKCE): così la ricerca funziona con il
+        solo ``SPOTIFY_CLIENT_ID`` pubblico, senza ``SPOTIFY_CLIENT_SECRET``. Senza
+        token utente ricade sul flusso Client Credentials (richiede id + secret).
+        """
+        if self.access_token:
+            if self._search is None:
+                self._search = spotipy.Spotify(auth=self.access_token)
+            return self._search
+        return self.public_client
 
     @property
     def user_client(self) -> spotipy.Spotify:
@@ -164,7 +183,7 @@ class SpotifyClient:
 
     def _search_raw(self, query: str, limit: int = 5) -> list[SpotifyTrack]:
         try:
-            results = self.public_client.search(q=query, type="track", limit=limit)
+            results = self.search_client.search(q=query, type="track", limit=limit)
         except SpotifyError:
             raise
         except Exception as exc:  # noqa: BLE001

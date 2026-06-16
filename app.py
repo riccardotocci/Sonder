@@ -12,6 +12,7 @@ import base64
 import functools
 import html
 import json
+import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -34,8 +35,11 @@ from core.lastfm_client import LastFMClient, LastFMError
 from core.storyteller import Storyteller, StorytellerError
 from core.spotify_client import SpotifyClient, SpotifyError
 from core.songstats_client import SongstatsClient, SongstatsError
+from core.elevenlabs_client import ElevenLabsClient, ElevenLabsError
 from core import spotify_pkce
 from core import tts_server
+
+logger = logging.getLogger("sonder.app")
 
 # --------------------------------------------------------------------------- #
 # Logo helpers
@@ -577,6 +581,43 @@ def selected_llm_model() -> str:
     return selected
 
 
+# --------------------------------------------------------------------------- #
+# Step-by-step log dell'elaborazione (router, ricerca, scrittura, regia…).
+# Mostrato in chat sotto la risposta e sopra la regia, così l'utente vede ogni
+# passo del flusso Musixmatch -> LLM -> studio mentre viene eseguito.
+# --------------------------------------------------------------------------- #
+def reset_llm_log() -> None:
+    """Azzera il log dei passi per una nuova richiesta utente."""
+    st.session_state["llm_log"] = []
+
+
+def add_llm_log(step: str, detail: str = "") -> None:
+    """Aggiunge un passo (titolo + dettaglio) al log dell'elaborazione corrente."""
+    entries = st.session_state.setdefault("llm_log", [])
+    entries.append({"step": step, "detail": detail})
+    logger.info("Step: %s%s", step, f" | {detail}" if detail else "")
+
+
+def current_llm_log() -> list[dict[str, str]]:
+    """Copia immutabile del log corrente, da allegare a messaggi/regia."""
+    return list(st.session_state.get("llm_log") or [])
+
+
+def render_llm_log(entries: list[dict[str, str]] | None = None) -> None:
+    """Renderizza il log dei passi in un expander (usa il log corrente se ``None``)."""
+    logs = entries if entries is not None else current_llm_log()
+    if not logs:
+        return
+    with st.expander("🪵 Processing log", expanded=False):
+        for index, item in enumerate(logs, start=1):
+            step = html.escape(str(item.get("step", "Step")))
+            detail = html.escape(str(item.get("detail", ""))).replace("\n", "<br>")
+            body = f"<b>{index}. {step}</b>"
+            if detail:
+                body += f'<br><span style="color:#8f8aa8;">{detail}</span>'
+            st.markdown(body, unsafe_allow_html=True)
+
+
 def render_llm_model_selector() -> None:
     """Box in sidebar per scegliere quale LLM usare nelle prossime chiamate."""
     values = llm_model_values()
@@ -765,34 +806,45 @@ def musixmatch_track_payload(
 # Songstats (statistiche reali + soglia di notorieta')
 # --------------------------------------------------------------------------- #
 @functools.lru_cache(maxsize=512)
-def _resolve_isrc(title: str, artist: str) -> str:
+def _resolve_isrc(title: str, artist: str, user_token: str = "") -> str:
     """Risolve l'ISRC di una traccia via Spotify (chiave per le statistiche Songstats).
 
     Le statistiche Songstats si interrogano per ISRC (``GET /tracks/stats?isrc=...``),
     un identificatore univoco e affidabile: evita le ambiguita' della ricerca testuale.
-    In cache di processo e thread-safe (usabile dai worker senza contesto Streamlit).
+
+    Task 3: quando l'utente ha effettuato il login Spotify (flusso PKCE) usiamo il suo
+    ``user_token`` per la ricerca, così basta il ``SPOTIFY_CLIENT_ID`` pubblico (nessun
+    ``SPOTIFY_CLIENT_SECRET``). In assenza di token utente ricadiamo sulle credenziali
+    client (id + secret). In cache di processo e thread-safe: il token viene passato dal
+    thread principale, quindi la funzione non legge ``st.session_state`` dai worker.
     """
-    if not settings.spotify_ready or not title:
+    if not title:
+        return ""
+    if not (user_token or settings.spotify_ready):
         return ""
     try:
-        track = SpotifyClient().search_track(title, artist or None)
+        client = SpotifyClient(access_token=user_token) if user_token else SpotifyClient()
+        track = client.search_track(title, artist or None)
     except Exception:  # noqa: BLE001 - mai propagare verso UI/filtri
         return ""
     return (track.isrc if track else "") or ""
 
 
 @functools.lru_cache(maxsize=512)
-def _songstats_track_stats(title: str, artist: str) -> dict[str, Any] | None:
+def _songstats_track_stats(
+    title: str, artist: str, user_token: str = ""
+) -> dict[str, Any] | None:
     """Lookup Songstats per traccia, in cache di processo (thread-safe).
 
-    Risolve prima l'ISRC via Spotify, poi interroga Songstats per ISRC (percorso
-    canonico). Restituisce un dict semplice (o ``None``) cosi' da poter essere usato sia
-    nel filtro di popolarita' sia nei grafici. NON usa ``st.cache_data`` perche' viene
-    invocato anche da thread di lavoro privi del contesto Streamlit.
+    Risolve prima l'ISRC via Spotify (token utente PKCE se disponibile, vedi Task 3),
+    poi interroga Songstats per ISRC (percorso canonico). Restituisce un dict semplice
+    (o ``None``) cosi' da poter essere usato sia nel filtro di popolarita' sia nei
+    grafici. NON usa ``st.cache_data`` perche' viene invocato anche da thread di lavoro
+    privi del contesto Streamlit.
     """
     if not settings.songstats_ready or not (title or artist):
         return None
-    isrc = _resolve_isrc(title, artist)
+    isrc = _resolve_isrc(title, artist, user_token)
     if not isrc:
         return None
     try:
@@ -847,8 +899,14 @@ def apply_popularity_floor(
     if not settings.songstats_ready or not tracks:
         return tracks, notes
 
+    # Task 3: cattura il token utente (PKCE) nel thread principale e passalo ai worker,
+    # così la risoluzione ISRC funziona col solo CLIENT_ID pubblico anche qui.
+    user_token = spotify_token()
+
     def lookup(t: dict[str, Any]) -> dict[str, Any] | None:
-        return _songstats_track_stats(t.get("title", ""), t.get("artist", ""))
+        return _songstats_track_stats(
+            t.get("title", ""), t.get("artist", ""), user_token
+        )
 
     with ThreadPoolExecutor(max_workers=min(8, len(tracks))) as executor:
         stats_list = list(executor.map(lookup, tracks))
@@ -1127,6 +1185,26 @@ def empty_studio(prompt: str) -> dict:
     return {"prompt": prompt, "tracks": [], "summary": "", "moods": []}
 
 
+@functools.lru_cache(maxsize=256)
+def _elevenlabs_audio_b64(text: str, voice_id: str) -> str:
+    """Genera (in cache di processo) l'MP3 ElevenLabs per *text* e lo ritorna base64.
+
+    Task 1: l'audio di narrazione viene prodotto lato server (Python) così funziona
+    anche in hosting (sonder.streamlit.app), dove il browser non può raggiungere il
+    server TTS locale (127.0.0.1). La cache per (testo, voce) evita di rigenerare lo
+    stesso clip tra i rerun. Thread-safe: usabile dai worker senza contesto Streamlit
+    (non tocca ``st.session_state``).
+    """
+    if not settings.elevenlabs_ready or not text.strip():
+        return ""
+    try:
+        audio = ElevenLabsClient().text_to_speech(text, voice_id=voice_id or None)
+    except ElevenLabsError as exc:
+        logger.warning("ElevenLabs pre-generation failed: %s", exc)
+        return ""
+    return base64.b64encode(audio).decode("ascii")
+
+
 def build_studio(
     prompt: str,
     tracks: list[dict[str, str]],
@@ -1269,11 +1347,28 @@ def build_studio(
         t.setdefault("translation_lang", translation_lang)
         t.setdefault("richsync", [])
 
-    # 4) Task 1: l'audio di narrazione ElevenLabs NON viene piu' pre-generato qui per
-    #    tutti i brani. Viene prodotto on-demand, UN clip alla volta, solo quando si
-    #    preme Play (o quando "Play All" raggiunge quel brano), tramite l'endpoint TTS
-    #    locale (vedi core/tts_server.py e render_studio_component). Il client del
-    #    browser scarica e mette in cache l'audio appena prima della riproduzione.
+    # 4) Task 1: pre-genera l'audio di narrazione ElevenLabs LATO SERVER (Python) e
+    #    allegalo a ogni brano come base64 (campo ``audio_b64``). Così la voce
+    #    ElevenLabs funziona anche in hosting (sonder.streamlit.app), dove il browser
+    #    non può raggiungere il server TTS locale (127.0.0.1). La generazione è in
+    #    parallelo e con cache per testo: il Web Speech API resta solo come ultima
+    #    spiaggia (vedi speak() in STUDIO_HTML) quando ElevenLabs non è configurato.
+    if settings.elevenlabs_ready:
+        voice_id = settings.elevenlabs_voice_id or ""
+        pending = [
+            (i, t.get("speech", ""))
+            for i, t in enumerate(enriched)
+            if str(t.get("speech", "")).strip() and not t.get("audio_b64")
+        ]
+        if pending:
+            def make_audio(item: tuple[int, str]) -> tuple[int, str]:
+                idx, text = item
+                return idx, _elevenlabs_audio_b64(text, voice_id)
+
+            with ThreadPoolExecutor(max_workers=min(8, len(pending))) as executor:
+                for idx, audio_b64 in executor.map(make_audio, pending):
+                    if audio_b64:
+                        enriched[idx]["audio_b64"] = audio_b64
 
     return {"prompt": prompt, "tracks": enriched, "summary": summary, "moods": moods}
 
@@ -1840,8 +1935,11 @@ STUDIO_HTML = """
     } catch (e) { return ''; }
   }
 
-  // speak(track, onend): genera/riproduce la narrazione del brano UNA alla volta.
-  // L'audio è prodotto SOLO ora (lazy) e messo in cache su track.audio_b64.
+  // speak(track, onend): riproduce la narrazione ElevenLabs del brano.
+  // Task 1: l'audio è PRE-GENERATO lato server (Python) e arriva già come
+  // base64 in track.audio_b64 (funziona anche in hosting, senza server TTS
+  // locale). Se manca, in locale prova l'endpoint loopback; il Web Speech API
+  // resta solo come ultima spiaggia quando ElevenLabs non è configurato.
   async function speak(track, onend) {
     // Stop anything currently playing.
     try { window.speechSynthesis.cancel(); } catch (e) {}
@@ -1850,7 +1948,8 @@ STUDIO_HTML = """
     const text = (track && track.speech) || '';
     let audioB64 = (track && track.audio_b64) || '';
 
-    // Genera l'audio ElevenLabs appena prima della riproduzione (lazy, on-demand).
+    // Fallback solo locale: se l'audio non è stato pre-generato ma esiste un
+    // endpoint TTS loopback, generalo on-demand (in hosting TTS_ENDPOINT è vuoto).
     if (!audioB64 && text && TTS_ENDPOINT) {
       setStatus('🗣️ Generating narration…');
       audioB64 = await fetchTtsB64(text);
@@ -1866,7 +1965,7 @@ STUDIO_HTML = """
       return;
     }
 
-    // Fallback: browser Web Speech API (anch'esso lazy, nessuna pre-generazione).
+    // Ultima spiaggia: browser Web Speech API (solo se ElevenLabs non è configurato).
     if (!text) { onend && onend(); return; }
     const u = new SpeechSynthesisUtterance(text);
     if (TTSLANG) u.lang = TTSLANG;
@@ -2038,14 +2137,18 @@ def render_studio_component(studio: dict, tts_lang: str) -> None:
         f"Sonder · {studio.get('prompt', '')[:60]}", ensure_ascii=False
     )
     token_json = json.dumps(spotify_token())
-    # Task 1: avvia l'endpoint TTS locale (loopback) e passa endpoint+token al
-    # componente, così il browser può generare la narrazione ElevenLabs on-demand,
-    # un clip alla volta. In modalità "embedded" (hosting) o senza chiave restano
-    # vuoti e si usa la Web Speech API del browser.
+    # Task 1: l'audio di narrazione ElevenLabs è PRE-GENERATO lato server e arriva
+    # già come base64 in ogni brano (campo ``audio_b64``), quindi funziona anche in
+    # hosting senza il server loopback. L'endpoint loopback viene avviato SOLO in
+    # locale e SOLO come fallback per gli eventuali brani con testo ma senza audio
+    # pre-generato. In modalità "embedded" o senza chiave resta vuoto (Web Speech).
     tts_endpoint = ""
     tts_token = ""
     mode = (getattr(settings, "sonder_tts_mode", "auto") or "auto").lower()
-    if settings.elevenlabs_ready and mode != "embedded":
+    needs_loopback = any(
+        str(t.get("speech", "")).strip() and not t.get("audio_b64") for t in tracks
+    )
+    if settings.elevenlabs_ready and mode != "embedded" and needs_loopback:
         try:
             info = tts_server.ensure_tts_server()
             tts_endpoint = info.endpoint
@@ -2176,10 +2279,17 @@ def render_songstats_section(studio: dict) -> None:
         )
         return
 
-    if not settings.spotify_ready:
+    # Task 3: per risolvere l'ISRC (e quindi mostrare le stats) serve poter cercare su
+    # Spotify. È possibile sia col login utente (flusso PKCE, solo CLIENT_ID pubblico)
+    # sia con le credenziali client (id + secret). Allineiamo il messaggio alla
+    # condizione realmente necessaria: dopo il login non chiediamo più il CLIENT_SECRET.
+    user_token = spotify_token()
+    if not (user_token or settings.spotify_ready):
         st.caption(
             "Songstats stats are looked up by ISRC, resolved via Spotify. "
-            "Set `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET` in `.env` to enable them."
+            "Connect your Spotify account in the sidebar (only the public "
+            "`SPOTIFY_CLIENT_ID` is needed) — or set `SPOTIFY_CLIENT_ID` and "
+            "`SPOTIFY_CLIENT_SECRET` in secrets — to enable them."
         )
         return
 
@@ -2187,7 +2297,7 @@ def render_songstats_section(studio: dict) -> None:
     # in parallelo (cache di processo => nessuna doppia chiamata tra i rerun).
     def get_stats(t: dict) -> dict[str, Any] | None:
         return t.get("songstats") or _songstats_track_stats(
-            t.get("title", ""), t.get("artist", "")
+            t.get("title", ""), t.get("artist", ""), user_token
         )
 
     with st.spinner("Loading Songstats…"):
@@ -2243,6 +2353,8 @@ def render_message(index: int, msg: dict) -> None:
     with st.chat_message(msg["role"], avatar=avatar):
         st.markdown(msg["content"])
 
+        render_llm_log(msg.get("llm_log"))
+
         if msg.get("reasoning"):
             with st.expander("🧠 Model reasoning chain", expanded=False):
                 st.markdown(msg["reasoning"])
@@ -2282,22 +2394,29 @@ def handle_user_input(
     ``search_languages`` (codici EN/IT/FR/...) limita le lingue delle query Musixmatch
     (task 6). Vuoto/None => tutte le lingue.
     """
+    reset_llm_log()
+    add_llm_log("User request", prompt)
     st.session_state["messages"].append({"role": "user", "content": prompt})
 
     # Senza LLM mostriamo comunque la struttura della regia con tab/sezioni vuote.
     if not settings.llm_ready:
+        add_llm_log("LLM skipped", "LLM_API_KEY is missing; the reasoning pipeline cannot run.")
         st.session_state["messages"].append(
             {
                 "role": "assistant",
                 "content": "LLM not configured: set `LLM_API_KEY` (and "
                 "`LLM_BASE_URL`/`LLM_MODEL`) in `.env` to populate the studio. "
                 "Showing empty structure for now.",
+                "llm_log": current_llm_log(),
             }
         )
         st.session_state["studio"] = empty_studio(prompt)
         return
 
     teller = Storyteller(model=selected_llm_model())
+    add_llm_log("LLM model", selected_llm_model())
+    if search_languages:
+        add_llm_log("Search languages", ", ".join(search_languages))
 
     with st.spinner("Searching Musixmatch..."):
         try:
@@ -2311,16 +2430,42 @@ def handle_user_input(
                 context=st.session_state.get("context", ""),
                 search_languages=search_languages or None,
             )
+            queries = plan.get("queries") or []
+            query_details: list[str] = []
+            for query in queries:
+                if not isinstance(query, dict):
+                    continue
+                bits = [
+                    str(query.get("q", "")).strip(),
+                    str(query.get("q_track", "")).strip(),
+                    str(query.get("q_artist", "")).strip(),
+                    str(query.get("q_lyrics", "")).strip(),
+                ]
+                compact = " | ".join(bit for bit in bits if bit)
+                if compact:
+                    query_details.append(compact)
+            add_llm_log(
+                "Search router",
+                f"music_related={plan.get('music_related', True)}, "
+                f"needs_search={plan.get('needs_search', True)}, "
+                f"limit={plan.get('limit', 8)}, "
+                f"query_count={len(query_details)}"
+                + ("\nQueries: " + "; ".join(query_details) if query_details else ""),
+            )
         except StorytellerError as exc:
+            add_llm_log("Search router failed", user_facing_llm_error(exc))
             st.session_state["messages"].append(
-                {"role": "assistant", "content": user_facing_llm_error(exc)}
+                {"role": "assistant", "content": user_facing_llm_error(exc), "llm_log": current_llm_log()}
             )
             st.session_state["studio"] = empty_studio(prompt)
             return
 
     if not plan.get("music_related", True):
         key = lang_name if lang_name in REFUSALS else "Italiano"
-        st.session_state["messages"].append({"role": "assistant", "content": REFUSALS[key]})
+        add_llm_log("Scope check", "The request was classified as outside the music domain.")
+        st.session_state["messages"].append(
+            {"role": "assistant", "content": REFUSALS[key], "llm_log": current_llm_log()}
+        )
         return
 
     if not plan.get("needs_search", True):
@@ -2335,9 +2480,14 @@ def handle_user_input(
                     context=st.session_state.get("context", ""),
                 )
                 text, _ = Storyteller.extract_playlist(content)
+                add_llm_log(
+                    "Conversation response",
+                    "Generated a direct music-domain answer without a Musixmatch search.",
+                )
             except StorytellerError as exc:
+                add_llm_log("Conversation response failed", user_facing_llm_error(exc))
                 st.session_state["messages"].append(
-                    {"role": "assistant", "content": user_facing_llm_error(exc)}
+                    {"role": "assistant", "content": user_facing_llm_error(exc), "llm_log": current_llm_log()}
                 )
                 st.session_state["studio"] = empty_studio(prompt)
                 return
@@ -2345,12 +2495,17 @@ def handle_user_input(
             key = lang_name if lang_name in REFUSALS else "Italiano"
             text = text.replace("[NON_MUSICALE]", "").strip() or REFUSALS[key]
         st.session_state["messages"].append(
-            {"role": "assistant", "content": text, "reasoning": reasoning, "tracks": []}
+            {"role": "assistant", "content": text, "reasoning": reasoning, "tracks": [], "llm_log": current_llm_log()}
         )
         st.session_state["studio"] = empty_studio(prompt)
         return
 
-    tracks, notes = search_musixmatch_from_plan(plan, lang_name)
+    with st.spinner("Searching Musixmatch..."):
+        tracks, notes = search_musixmatch_from_plan(plan, lang_name)
+    add_llm_log(
+        "Musixmatch search",
+        f"Found {len(tracks)} track(s)." + ("\n" + "\n".join(notes) if notes else ""),
+    )
 
     with st.spinner("Rewriting from Musixmatch lyrics..."):
         try:
@@ -2360,25 +2515,36 @@ def handle_user_input(
                 language=lang_name,
                 context=st.session_state.get("context", ""),
             )
-        except StorytellerError as exc:
-            st.session_state["messages"].append(
-                {"role": "assistant", "content": user_facing_llm_error(exc), "tracks": tracks}
+            add_llm_log(
+                "Response writer",
+                "Composed the assistant answer from the Musixmatch results.",
             )
-            st.session_state["studio"] = build_studio(prompt, tracks, lang_name, lang_code) if tracks else empty_studio(prompt)
+        except StorytellerError as exc:
+            add_llm_log("Response writer failed", user_facing_llm_error(exc))
+            st.session_state["messages"].append(
+                {"role": "assistant", "content": user_facing_llm_error(exc), "tracks": tracks, "llm_log": current_llm_log()}
+            )
+            studio = build_studio(prompt, tracks, lang_name, lang_code) if tracks else empty_studio(prompt)
+            studio["llm_log"] = current_llm_log()
+            st.session_state["studio"] = studio
             return
 
     if notes:
         text = text + "\n\n" + "\n".join(f"> {note}" for note in notes)
 
     st.session_state["messages"].append(
-        {"role": "assistant", "content": text, "reasoning": reasoning, "tracks": tracks}
+        {"role": "assistant", "content": text, "reasoning": reasoning, "tracks": tracks, "llm_log": current_llm_log()}
     )
 
     if tracks:
         with st.spinner("Building the narrated studio (speeches, photos, geography)…"):
-            st.session_state["studio"] = build_studio(
-                prompt, tracks, lang_name, lang_code
-            )
+            studio = build_studio(prompt, tracks, lang_name, lang_code)
+        add_llm_log(
+            "Studio built",
+            f"Narration, photos and geography ready for {len(studio.get('tracks', []))} track(s).",
+        )
+        studio["llm_log"] = current_llm_log()
+        st.session_state["studio"] = studio
     else:
         # Nessun brano suggerito: mostriamo comunque la struttura vuota.
         st.session_state["studio"] = empty_studio(prompt)
@@ -2583,6 +2749,7 @@ def main() -> None:
     if has_tracks:
         # Studio pieno: mostra solo il titolo del prompt e la regia.
         render_studio_title(studio["prompt"])
+        render_llm_log(studio.get("llm_log"))
     else:
         st.markdown('<hr class="hr-glow">', unsafe_allow_html=True)
 
@@ -2605,7 +2772,7 @@ def main() -> None:
                     st.rerun()
 
             typed = st.text_input(
-                "",
+                "Message",
                 placeholder="Type here… what would you like to talk about?",
                 key="_main_input",
                 label_visibility="collapsed",
