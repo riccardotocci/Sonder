@@ -22,7 +22,12 @@ import requests
 import streamlit as st
 import streamlit.components.v1 as components
 
-from core.config import settings, SONGSTATS_MIN_STREAMS, SEARCH_LANGUAGE_OPTIONS
+from core.config import (
+    settings,
+    SONGSTATS_MIN_STREAMS,
+    SEARCH_LANGUAGE_OPTIONS,
+    LLM_MODEL_OPTIONS,
+)
 from core.musixmatch_client import MusixmatchClient, MusixmatchError
 from core.audiodb_client import AudioDBClient, AudioDBError
 from core.lastfm_client import LastFMClient, LastFMError
@@ -549,6 +554,49 @@ def render_pills(items: list[str]) -> None:
             f'border:1px solid {color};color:{color};">{item}</span>'
         )
     st.markdown("".join(spans), unsafe_allow_html=True)
+
+
+LLM_MODEL_LABELS = {value: label for label, value in LLM_MODEL_OPTIONS}
+
+
+def llm_model_values() -> list[str]:
+    """Modelli LLM selezionabili; include quello da .env se non gia' presente."""
+    values = [value for _, value in LLM_MODEL_OPTIONS]
+    if settings.llm_model and settings.llm_model not in values:
+        values.insert(0, settings.llm_model)
+    return values
+
+
+def selected_llm_model() -> str:
+    """Modello LLM attivo per la sessione (scelta utente o default da .env)."""
+    values = llm_model_values()
+    selected = st.session_state.get("llm_model") or settings.llm_model
+    if selected not in values:
+        selected = values[0] if values else settings.llm_model
+    st.session_state["llm_model"] = selected
+    return selected
+
+
+def render_llm_model_selector() -> None:
+    """Box in sidebar per scegliere quale LLM usare nelle prossime chiamate."""
+    values = llm_model_values()
+    if not values:
+        return
+    selected = selected_llm_model()
+    label_map = dict(LLM_MODEL_LABELS)
+    if settings.llm_model and settings.llm_model not in label_map:
+        label_map[settings.llm_model] = "Configured in .env"
+    index = values.index(selected) if selected in values else 0
+    with st.sidebar.expander("🧠 LLM model", expanded=False):
+        chosen = st.selectbox(
+            "Model",
+            values,
+            index=index,
+            format_func=lambda value: label_map.get(value, value),
+            key="llm_model_selectbox",
+        )
+        st.session_state["llm_model"] = chosen
+        st.caption(f"Using `{chosen}` for the next LLM calls.")
 
 
 def render_status_sidebar() -> None:
@@ -1183,7 +1231,7 @@ def build_studio(
     #    I track dict includono ora _bio e lyrics, usati da studio_brief().
     if settings.llm_ready:
         try:
-            brief = Storyteller().studio_brief(
+            brief = Storyteller(model=selected_llm_model()).studio_brief(
                 title=prompt, tracks=enriched, language=lang_name
             )
         except StorytellerError:
@@ -1547,7 +1595,7 @@ STUDIO_HTML = """
   }
 
   function cleanLyricLines(text) {
-    return String(text || '').split('\n')
+    return String(text || '').split('\\n')
       .map(l => l.trim())
       .filter(l => l && !l.startsWith('****') && !l.toLowerCase().includes('commercial use'));
   }
@@ -2249,7 +2297,7 @@ def handle_user_input(
         st.session_state["studio"] = empty_studio(prompt)
         return
 
-    teller = Storyteller()
+    teller = Storyteller(model=selected_llm_model())
 
     with st.spinner("Searching Musixmatch..."):
         try:
@@ -2408,7 +2456,7 @@ def get_spotify_theme_recs(lang_name: str) -> list[str]:
         st.session_state["sp_theme_recs_no_scope"] = bool(data and data.get("_no_scope"))
         return []
     try:
-        themes = Storyteller().suggest_listening_themes(
+        themes = Storyteller(model=selected_llm_model()).suggest_listening_themes(
             artists=data.get("artists", []),
             tracks=data.get("tracks", []),
             genres=data.get("genres", []),
@@ -2505,7 +2553,7 @@ def main() -> None:
             if st.button("Remove context", use_container_width=True):
                 st.session_state["context"] = ""
 
-    st.sidebar.caption(f"LLM model: `{settings.llm_model}`")
+    render_llm_model_selector()
 
     # Stato chat
     if "messages" not in st.session_state:
