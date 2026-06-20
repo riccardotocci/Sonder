@@ -1109,6 +1109,150 @@ def compose_track_list_reply(tracks: list[dict[str, str]]) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Seed da artista/brano: testi + temi da Musixmatch -> prompt per il router LLM
+# --------------------------------------------------------------------------- #
+def _clean_lyrics_excerpt(text: str, limit: int = 600) -> str:
+    """Pulisce un testo Musixmatch per usarlo come seed.
+
+    Il piano gratuito accoda al testo (parziale) un disclaimer di copyright dopo
+    una riga di asterischi (``*** ... ***``): tagliamo a quel marcatore e
+    compattiamo gli spazi, troncando a ``limit`` caratteri.
+    """
+    raw = (text or "").split("***", 1)[0]
+    return compact_text(raw, limit)
+
+
+def fetch_seed_material(
+    artist: str, song: str = "", *, max_tracks: int = 4
+) -> dict[str, Any]:
+    """Recupera da Musixmatch testi + temi/mood per un artista (e brano opzionale).
+
+    Con un brano specifico cerca il match preciso (artista + titolo); col solo
+    artista prende i suoi brani migliori. Ogni traccia porta temi, mood, generi e
+    un estratto del testo. Funzione pura/thread-safe (istanzia il proprio client).
+    Degrada con grazia: se Musixmatch non e' configurato, l'artista e' vuoto o non
+    ci sono risultati, ``tracks`` resta una lista vuota.
+    """
+    artist = (artist or "").strip()
+    song = (song or "").strip()
+    material: dict[str, Any] = {
+        "artist": artist,
+        "song": song,
+        "tracks": [],
+        "themes": [],
+        "moods": [],
+    }
+    if not settings.musixmatch_ready or not artist:
+        return material
+    mx = MusixmatchClient()
+    try:
+        tracks = mx.search_tracks(
+            track=song or None,
+            artist=artist,
+            has_lyrics=True,
+            limit=1 if song else max_tracks,
+        )
+    except MusixmatchError:
+        return material
+    tracks = tracks[: 1 if song else max_tracks]
+    if not tracks:
+        return material
+
+    def describe(track: Any) -> dict[str, Any]:
+        analysis = mx.get_lyrics_analysis(track.track_id)
+        moods = MusixmatchClient.analysis_moods(analysis)
+        themes = MusixmatchClient.analysis_themes(analysis)
+        excerpt = ""
+        if track.has_lyrics:
+            try:
+                lyrics = mx.get_lyrics(track.track_id)
+                if lyrics and not lyrics.is_empty:
+                    excerpt = _clean_lyrics_excerpt(lyrics.body)
+            except MusixmatchError:
+                excerpt = ""
+        return {
+            "title": track.track_name,
+            "artist": track.artist_name,
+            "themes": themes,
+            "moods": moods,
+            "excerpt": excerpt,
+            "genres": [str(g).strip() for g in (track.genres or []) if str(g).strip()],
+        }
+
+    with ThreadPoolExecutor(max_workers=min(4, len(tracks))) as executor:
+        described = list(executor.map(describe, tracks))
+
+    all_themes: list[str] = []
+    all_moods: list[str] = []
+    for d in described:
+        for theme in d["themes"]:
+            if theme not in all_themes:
+                all_themes.append(theme)
+        for mood in d["moods"]:
+            if mood not in all_moods:
+                all_moods.append(mood)
+    material["tracks"] = described
+    material["themes"] = all_themes
+    material["moods"] = all_moods
+    return material
+
+
+def build_seed_prompt(artist: str, song: str = "") -> str:
+    """Compone il prompt seed (testi + temi) per il router ``plan_musixmatch_search``.
+
+    Interroga Musixmatch per l'artista/brano scelto e impacchetta testi e temi in
+    un messaggio utente in linguaggio naturale: e' lo stesso ingresso che il primo
+    LLM (router) riformula nelle query, esattamente come per un prompt scritto a mano.
+    Restituisce sempre una stringa non vuota (fallback coi soli nomi in demo mode).
+    """
+    artist = (artist or "").strip()
+    song = (song or "").strip()
+    material = fetch_seed_material(artist, song)
+    tracks = material.get("tracks") or []
+
+    head = (
+        f'Voglio una playlist ispirata all\'artista "{artist}"'
+        + (f' e in particolare al brano "{song}"' if song else "")
+        + "."
+    )
+    # Fallback: senza materiale da Musixmatch lasciamo al router un seed minimo coi
+    # soli nomi, cosi' la pipeline funziona comunque (demo mode / artista ignoto).
+    if not tracks:
+        return (
+            head
+            + " Proponi brani con atmosfere, temi e significati affini a quelli"
+            " tipici di questo artista."
+        )
+
+    lines = [head, "", "Da Musixmatch ho raccolto questi testi e temi:"]
+    for d in tracks:
+        lines.append("")
+        lines.append(f"- {d['artist']} — {d['title']}")
+        if d.get("themes"):
+            lines.append(f"  Temi: {', '.join(d['themes'][:8])}")
+        if d.get("moods"):
+            lines.append(f"  Mood: {', '.join(d['moods'][:8])}")
+        if d.get("genres"):
+            lines.append(f"  Generi: {', '.join(d['genres'][:4])}")
+        if d.get("excerpt"):
+            lines.append(f'  Estratto del testo: "{d["excerpt"]}"')
+
+    themes = material.get("themes") or []
+    moods = material.get("moods") or []
+    if themes:
+        lines.append("")
+        lines.append(f"Temi ricorrenti: {', '.join(themes[:10])}.")
+    if moods:
+        lines.append(f"Mood ricorrenti: {', '.join(moods[:10])}.")
+    lines.append("")
+    lines.append(
+        "Proponi una playlist di brani con atmosfere, temi e significati affini"
+        " a questi testi."
+    )
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
 # Chat pipeline (ported from handle_user_input -> pure function)
 # --------------------------------------------------------------------------- #
 def run_chat(

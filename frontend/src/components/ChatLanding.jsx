@@ -6,17 +6,37 @@ export default function ChatLanding({
   searchLanguages,
   setSearchLanguages,
   onSend,
+  onSeed,
   busy,
   compact,
 }) {
   const { t, code } = useT();
   const [value, setValue] = useState("");
+  const [artist, setArtist] = useState("");
+  const [song, setSong] = useState("");
+  const [seedError, setSeedError] = useState("");
 
   const submit = (e) => {
     e.preventDefault();
     if (!value.trim() || busy) return;
     onSend(value);
     setValue("");
+  };
+
+  const submitSeed = (e) => {
+    e.preventDefault();
+    if (busy) return;
+    const a = artist.trim();
+    const s = song.trim();
+    // L'artista e' obbligatorio: niente artista -> messaggio (vuoto vs solo brano).
+    if (!a) {
+      setSeedError(s ? t("seedSpecifyArtist") : t("seedWriteSomething"));
+      return;
+    }
+    setSeedError("");
+    onSeed(a, s);
+    setArtist("");
+    setSong("");
   };
 
   const toggleLang = (code) => {
@@ -52,6 +72,33 @@ export default function ChatLanding({
           {busy ? "…" : t("send")}
         </button>
       </form>
+
+      <div className="seed-search">
+        <label className="field-label">{t("seedLabel")}</label>
+        <form className="chat-bar seed-bar" onSubmit={submitSeed}>
+          <input
+            className="chat-input"
+            placeholder={t("seedArtistPlaceholder")}
+            value={artist}
+            onChange={(e) => {
+              setArtist(e.target.value);
+              if (seedError) setSeedError("");
+            }}
+            disabled={busy}
+          />
+          <input
+            className="chat-input"
+            placeholder={t("seedSongPlaceholder")}
+            value={song}
+            onChange={(e) => setSong(e.target.value)}
+            disabled={busy}
+          />
+          <button className="btn-primary" type="submit" disabled={busy}>
+            {busy ? "…" : t("send")}
+          </button>
+        </form>
+        {seedError && <div className="seed-hint">{seedError}</div>}
+      </div>
 
       <div style={{ marginTop: "1rem" }}>
         <label className="field-label">{t("searchLangsLabel")}</label>

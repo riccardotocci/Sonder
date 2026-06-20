@@ -14,7 +14,7 @@ import {
   getLang,
   translate,
 } from "./i18n.jsx";
-import { getBootstrap, postChat, postNarrate } from "./api.js";
+import { getBootstrap, postChat, postNarrate, postSeed } from "./api.js";
 import {
   loadSpotifyToken,
   saveSpotifyToken,
@@ -141,6 +141,61 @@ export default function App() {
     };
   }, [spotify]);
 
+  // Gestione condivisa della risposta di /api/chat e /api/seed: aggiunge la
+  // risposta dell'assistente, mostra lo Studio (fase 1) e lancia la narrazione
+  // (fase 2, non bloccante). ``fallbackLabel`` e' il tema usato per la narrazione
+  // quando lo Studio non porta un prompt proprio.
+  const handleChatResult = useCallback(
+    (res, gen, fallbackLabel) => {
+      // Drop the response if a New chat (or newer send) happened meanwhile.
+      if (gen !== chatGen.current) return;
+      setMessages((m) => [...m, res.assistant_message]);
+      setTtsLang(res.tts_lang || "");
+      if (res.studio && (res.studio.tracks || []).length) {
+        // Fase 1: mostra subito lo Studio con tutti i dati dei servizi.
+        setStudio(res.studio);
+        setNarrationSpeeches(null);
+        setNarrationPending(true);
+        // Fase 2 (non bloccante): genera i testi narrati e popolali quando
+        // pronti. Fino ad allora lo Studio mostra una barra di caricamento e
+        // disabilita la narrazione, ma consente di scegliere e lanciare i brani.
+        // Watchdog: se la richiesta si blocca, sblocca comunque la UI cosi' la
+        // barra di caricamento non resta all'infinito (la narrazione, se arriva
+        // piu' tardi, popola ugualmente il testo).
+        const watchdog = setTimeout(() => {
+          if (gen !== chatGen.current) return;
+          setNarrationSpeeches([]);
+          setNarrationPending(false);
+        }, 180000);
+        postNarrate({
+          prompt: res.studio.prompt || fallbackLabel,
+          tracks: res.studio.tracks,
+          language: getLang(uiLang).key,
+          llm_model: llmModel,
+        })
+          .then((nr) => {
+            clearTimeout(watchdog);
+            if (gen !== chatGen.current) return;
+            setNarrationSpeeches(nr.speeches || []);
+            setNarrationPending(false);
+          })
+          .catch((err) => {
+            clearTimeout(watchdog);
+            console.warn("[narrate] failed", err);
+            if (gen !== chatGen.current) return;
+            // Sblocca comunque la UI: senza testi narrati la narrazione resta
+            // priva di contenuto ma i comandi tornano disponibili.
+            setNarrationSpeeches([]);
+            setNarrationPending(false);
+          });
+      } else {
+        setNarrationPending(false);
+        setNarrationSpeeches(null);
+      }
+    },
+    [uiLang, llmModel],
+  );
+
   const sendPrompt = useCallback(
     async (prompt) => {
       const text = (prompt || "").trim();
@@ -180,51 +235,7 @@ export default function App() {
           tts_lang: res.tts_lang || "",
           llm_log: res.assistant_message?.llm_log,
         });
-        // Drop the response if a New chat (or newer send) happened meanwhile.
-        if (gen !== chatGen.current) return;
-        setMessages((m) => [...m, res.assistant_message]);
-        setTtsLang(res.tts_lang || "");
-        if (res.studio && (res.studio.tracks || []).length) {
-          // Fase 1: mostra subito lo Studio con tutti i dati dei servizi.
-          setStudio(res.studio);
-          setNarrationSpeeches(null);
-          setNarrationPending(true);
-          // Fase 2 (non bloccante): genera i testi narrati e popolali quando
-          // pronti. Fino ad allora lo Studio mostra una barra di caricamento e
-          // disabilita la narrazione, ma consente di scegliere e lanciare i brani.
-          // Watchdog: se la richiesta si blocca, sblocca comunque la UI cosi' la
-          // barra di caricamento non resta all'infinito (la narrazione, se arriva
-          // piu' tardi, popola ugualmente il testo).
-          const watchdog = setTimeout(() => {
-            if (gen !== chatGen.current) return;
-            setNarrationSpeeches([]);
-            setNarrationPending(false);
-          }, 180000);
-          postNarrate({
-            prompt: res.studio.prompt || text,
-            tracks: res.studio.tracks,
-            language: getLang(uiLang).key,
-            llm_model: llmModel,
-          })
-            .then((nr) => {
-              clearTimeout(watchdog);
-              if (gen !== chatGen.current) return;
-              setNarrationSpeeches(nr.speeches || []);
-              setNarrationPending(false);
-            })
-            .catch((err) => {
-              clearTimeout(watchdog);
-              console.warn("[narrate] failed", err);
-              if (gen !== chatGen.current) return;
-              // Sblocca comunque la UI: senza testi narrati la narrazione resta
-              // priva di contenuto ma i comandi tornano disponibili.
-              setNarrationSpeeches([]);
-              setNarrationPending(false);
-            });
-        } else {
-          setNarrationPending(false);
-          setNarrationSpeeches(null);
-        }
+        handleChatResult(res, gen, text);
       } catch (e) {
         const elapsed = ((performance.now() - startedAt) / 1000).toFixed(1);
         console.error(`[chat] ✗ FAILED after ${elapsed}s`, e);
@@ -238,7 +249,63 @@ export default function App() {
         if (gen === chatGen.current) setBusy(false);
       }
     },
-    [messages, busy, searchLanguages, llmModel, token, uiLang],
+    [messages, busy, searchLanguages, llmModel, token, uiLang, handleChatResult],
+  );
+
+  // Ricerca per artista (+ brano opzionale). Il backend recupera testi e temi da
+  // Musixmatch e li passa allo stesso router LLM di /api/chat. La chat mostra
+  // l'etichetta leggibile (artista — brano), non il prompt-seed lungo coi testi.
+  const sendSeed = useCallback(
+    async (artist, song) => {
+      const a = (artist || "").trim();
+      const s = (song || "").trim();
+      if (!a || busy) return;
+      setError("");
+      const gen = ++chatGen.current;
+      const history = messages;
+      const label = s ? `${a} — ${s}` : a;
+      setMessages((m) => [...m, { role: "user", content: label }]);
+      setBusy(true);
+      const payload = {
+        messages: history,
+        artist: a,
+        song: s,
+        search_languages: searchLanguages,
+        llm_model: llmModel,
+        spotify_token: token,
+        language: getLang(uiLang).key,
+      };
+      console.log("[seed] → POST /api/seed", {
+        artist: a,
+        song: s,
+        history_len: payload.messages.length,
+        language: payload.language,
+        search_languages: payload.search_languages,
+        llm_model: payload.llm_model || "(default)",
+      });
+      const startedAt = performance.now();
+      try {
+        const res = await postSeed(payload);
+        const elapsed = ((performance.now() - startedAt) / 1000).toFixed(1);
+        console.log(`[seed] ← OK in ${elapsed}s`, {
+          tracks: (res.assistant_message?.tracks || []).length,
+          studio_tracks: (res.studio?.tracks || []).length,
+        });
+        handleChatResult(res, gen, label);
+      } catch (e) {
+        const elapsed = ((performance.now() - startedAt) / 1000).toFixed(1);
+        console.error(`[seed] ✗ FAILED after ${elapsed}s`, e);
+        if (gen !== chatGen.current) return;
+        setError(String(e.message || e));
+        setMessages((m) => [
+          ...m,
+          { role: "assistant", content: "⚠️ " + String(e.message || e) },
+        ]);
+      } finally {
+        if (gen === chatGen.current) setBusy(false);
+      }
+    },
+    [messages, busy, searchLanguages, llmModel, token, uiLang, handleChatResult],
   );
 
   const newChat = useCallback(() => {
@@ -331,6 +398,7 @@ export default function App() {
               searchLanguages={searchLanguages}
               setSearchLanguages={setSearchLanguages}
               onSend={sendPrompt}
+              onSeed={sendSeed}
               busy={busy}
               compact={false}
             />

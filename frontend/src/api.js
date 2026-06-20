@@ -29,6 +29,12 @@ export function postChat(payload) {
   return postJSON("/api/chat", payload);
 }
 
+// Ricerca per artista (+ brano opzionale): il backend recupera testi e temi da
+// Musixmatch e li passa allo stesso router LLM di /api/chat.
+export function postSeed(payload) {
+  return postJSON("/api/seed", payload);
+}
+
 // Fase 2: genera i testi narrati per i brani gia' arricchiti dalla fase 1.
 export function postNarrate(payload) {
   return postJSON("/api/narrate", payload);

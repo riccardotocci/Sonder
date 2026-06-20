@@ -282,6 +282,15 @@ label.field-label {
 .chat-bar { display: flex; gap: .6rem; align-items: stretch; margin-top: 1.2rem; }
 .chat-bar .chat-input { flex: 1; }
 
+/* secondary "search by artist & song" bar */
+.seed-search { margin-top: 1rem; }
+.seed-search .field-label { margin-bottom: .45rem; }
+.seed-bar { margin-top: 0; }
+.seed-hint {
+    margin-top: .5rem; font-size: .85rem; color: #ffb38a;
+    font-family: 'Inter', sans-serif;
+}
+
 /* ---------------- Messages ---------------- */
 .messages { display: flex; flex-direction: column; gap: 1rem; margin: 1.5rem 0; }
 .msg { display: flex; gap: .8rem; }

@@ -62,6 +62,18 @@ class ChatRequest(BaseModel):
     language: str = "English"
 
 
+class SeedRequest(BaseModel):
+    # Ricerca per artista (+ brano opzionale): il backend recupera testi e temi da
+    # Musixmatch e li impacchetta come prompt per lo stesso router LLM di /api/chat.
+    messages: list[dict[str, Any]] = []
+    artist: str = ""
+    song: str = ""
+    search_languages: list[str] = []
+    llm_model: str = ""
+    spotify_token: str = ""
+    language: str = "English"
+
+
 class NarrateRequest(BaseModel):
     # Fase 2: i brani arrivano gia' arricchiti dalla fase 1 (/api/chat). Qui si
     # genera solo il testo narrato (la chiamata LLM lenta studio_brief).
@@ -189,6 +201,46 @@ def chat(req: ChatRequest) -> dict:
         "user_message": user_message,
         "assistant_message": result["assistant"],
         "studio": result["studio"],
+        "tts_lang": TTS_LANG.get(lang_name, ""),
+    }
+
+
+@app.post("/api/seed")
+def seed(req: SeedRequest) -> Any:
+    # Ricerca per artista/brano: l'artista e' obbligatorio. Il frontend valida
+    # gia', ma lo ribadiamo lato server (chi scrive solo il brano o niente ottiene
+    # un errore esplicito invece di una ricerca a vuoto).
+    artist = (req.artist or "").strip()
+    song = (req.song or "").strip()
+    if not artist:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Specify the artist to search by artist & song."},
+        )
+    lang_name, lang_code = LANGUAGES.get(req.language, LANGUAGES["English"])
+    # Recupera testi + temi da Musixmatch e impacchettali come prompt: da qui il
+    # flusso e' identico a /api/chat (il router LLM li riformula nelle query).
+    seed_prompt = pipeline.build_seed_prompt(artist, song)
+    result = pipeline.run_chat(
+        messages=req.messages,
+        prompt=seed_prompt,
+        lang_name=lang_name,
+        lang_code=lang_code,
+        search_languages=req.search_languages or None,
+        llm_model=req.llm_model,
+        user_token=req.spotify_token,
+        with_narration=False,
+    )
+    # Etichetta leggibile (artista — brano) per la chat, il titolo dello Studio e
+    # la narrazione: NON il prompt-seed lungo coi testi.
+    label = f"{artist} — {song}" if song else artist
+    studio = result.get("studio")
+    if studio:
+        studio["prompt"] = label
+    return {
+        "user_message": {"role": "user", "content": label},
+        "assistant_message": result["assistant"],
+        "studio": studio,
         "tts_lang": TTS_LANG.get(lang_name, ""),
     }
 
