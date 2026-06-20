@@ -296,11 +296,19 @@ export default function App() {
         const elapsed = ((performance.now() - startedAt) / 1000).toFixed(1);
         console.error(`[seed] ✗ FAILED after ${elapsed}s`, e);
         if (gen !== chatGen.current) return;
-        setError(String(e.message || e));
-        setMessages((m) => [
-          ...m,
-          { role: "assistant", content: "⚠️ " + String(e.message || e) },
-        ]);
+        // "Brano/artista non trovato" (404 dal backend): niente errore tecnico in
+        // chat. Annulliamo il messaggio utente ottimistico (cosi' la landing con
+        // la seed bar torna visibile) e mostriamo un avviso gentile: riprova.
+        if (String(e.message || e).includes("seed_not_found")) {
+          setMessages(history);
+          setError(translate(uiLang, "seedNotFound"));
+        } else {
+          setError(String(e.message || e));
+          setMessages((m) => [
+            ...m,
+            { role: "assistant", content: "⚠️ " + String(e.message || e) },
+          ]);
+        }
       } finally {
         if (gen === chatGen.current) setBusy(false);
       }

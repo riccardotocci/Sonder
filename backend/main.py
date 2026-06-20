@@ -218,9 +218,20 @@ def seed(req: SeedRequest) -> Any:
             content={"error": "Specify the artist to search by artist & song."},
         )
     lang_name, lang_code = LANGUAGES.get(req.language, LANGUAGES["English"])
-    # Recupera testi + temi da Musixmatch e impacchettali come prompt: da qui il
-    # flusso e' identico a /api/chat (il router LLM li riformula nelle query).
-    seed_prompt = pipeline.build_seed_prompt(artist, song)
+    # Recupera testi + temi da Musixmatch UNA sola volta. Se Musixmatch e'
+    # configurato ma non trova nulla per quell'artista/brano, lo diciamo subito
+    # all'utente (404 -> "riprova") invece di proseguire con un seed generico. In
+    # demo mode (Musixmatch non configurato) NON blocchiamo: l'app deve girare
+    # anche senza chiavi, quindi si prosegue col prompt di fallback.
+    material = pipeline.fetch_seed_material(artist, song)
+    if settings.musixmatch_ready and not material.get("tracks"):
+        return JSONResponse(
+            status_code=404,
+            content={"error": "seed_not_found"},
+        )
+    # Impacchetta testi e temi come prompt: da qui il flusso e' identico a
+    # /api/chat (il router LLM li riformula nelle query).
+    seed_prompt = pipeline.build_seed_prompt(artist, song, material=material)
     result = pipeline.run_chat(
         messages=req.messages,
         prompt=seed_prompt,

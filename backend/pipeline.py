@@ -1197,17 +1197,22 @@ def fetch_seed_material(
     return material
 
 
-def build_seed_prompt(artist: str, song: str = "") -> str:
+def build_seed_prompt(
+    artist: str, song: str = "", *, material: dict[str, Any] | None = None
+) -> str:
     """Compone il prompt seed (testi + temi) per il router ``plan_musixmatch_search``.
 
     Interroga Musixmatch per l'artista/brano scelto e impacchetta testi e temi in
     un messaggio utente in linguaggio naturale: e' lo stesso ingresso che il primo
     LLM (router) riformula nelle query, esattamente come per un prompt scritto a mano.
     Restituisce sempre una stringa non vuota (fallback coi soli nomi in demo mode).
+    Il chiamante puo' passare ``material`` gia' recuperato per evitare una seconda
+    chiamata a Musixmatch (es. dopo il check "brano non trovato" lato endpoint).
     """
     artist = (artist or "").strip()
     song = (song or "").strip()
-    material = fetch_seed_material(artist, song)
+    if material is None:
+        material = fetch_seed_material(artist, song)
     tracks = material.get("tracks") or []
 
     head = (

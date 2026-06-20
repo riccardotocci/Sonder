@@ -262,14 +262,14 @@ label.field-label {
     box-shadow: 0 0 14px rgba(255,45,120,.25);
 }
 
-/* example prompts */
-.example-prompts { display: flex; flex-direction: column; gap: .6rem; margin-top: 1rem; }
+/* example prompts (compact chips) */
+.example-prompts { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .85rem; }
 .example-prompt {
     text-align: left; cursor: pointer;
-    border-radius: 12px; padding: .75rem 1rem;
+    border-radius: 10px; padding: .45rem .75rem;
     border: 1px solid rgba(255,255,255,.08);
     background: linear-gradient(160deg, rgba(255,255,255,.05), rgba(255,255,255,.02));
-    color: #e8e6f5; font-size: .95rem; font-family: 'Inter', sans-serif;
+    color: #e8e6f5; font-size: .82rem; font-family: 'Inter', sans-serif;
     transition: transform .15s ease, box-shadow .15s ease, border-color .15s ease;
 }
 .example-prompt:hover {
@@ -281,6 +281,12 @@ label.field-label {
 /* chat input bar */
 .chat-bar { display: flex; gap: .6rem; align-items: stretch; margin-top: 1.2rem; }
 .chat-bar .chat-input { flex: 1; }
+
+/* landing layout: language picker on top, theme label above the main bar */
+.lang-select { margin-top: 1.4rem; }
+.field-label.lang-label { font-size: 1.05rem; color: #c9c5dd; margin-bottom: .55rem; }
+.theme-label { margin-top: 1.4rem; }
+.theme-label + .chat-bar { margin-top: .4rem; }
 
 /* secondary "search by artist & song" bar */
 .seed-search { margin-top: 1rem; }

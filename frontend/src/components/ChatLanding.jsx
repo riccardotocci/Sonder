@@ -53,13 +53,29 @@ export default function ChatLanding({
         </div>
       )}
 
-      {!compact && (
-        <>
-          <div className="hero-kicker">Sonder</div>
-          <p className="hero-sub">{t("heroSub")}</p>
-        </>
-      )}
+      {!compact && <p className="hero-sub">{t("heroSub")}</p>}
 
+      <div className="lang-select">
+        <label className="field-label lang-label">{t("searchLangsLabel")}</label>
+        <div className="multiselect">
+          {boot.search_languages.map((l) => (
+            <button
+              type="button"
+              key={l.code}
+              className={
+                "ms-chip " + (searchLanguages.includes(l.code) ? "active" : "")
+              }
+              onClick={() => toggleLang(l.code)}
+            >
+              {getLangName(code, l.code)}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {!compact && (
+        <label className="field-label theme-label">{t("describeThemeLabel")}</label>
+      )}
       <form className="chat-bar" onSubmit={submit}>
         <input
           className="chat-input"
@@ -72,6 +88,21 @@ export default function ChatLanding({
           {busy ? "…" : t("send")}
         </button>
       </form>
+
+      {!compact && (
+        <div className="example-prompts">
+          {boot.example_prompts.map((p, i) => (
+            <button
+              type="button"
+              key={i}
+              className="example-prompt"
+              onClick={() => !busy && onSend(p.text)}
+            >
+              {p.icon} {p.text}
+            </button>
+          ))}
+        </div>
+      )}
 
       <div className="seed-search">
         <label className="field-label">{t("seedLabel")}</label>
@@ -93,45 +124,16 @@ export default function ChatLanding({
             onChange={(e) => setSong(e.target.value)}
             disabled={busy}
           />
-          <button className="btn-primary" type="submit" disabled={busy}>
+          <button
+            className="btn-primary"
+            type="submit"
+            disabled={busy || !artist.trim()}
+          >
             {busy ? "…" : t("send")}
           </button>
         </form>
         {seedError && <div className="seed-hint">{seedError}</div>}
       </div>
-
-      <div style={{ marginTop: "1rem" }}>
-        <label className="field-label">{t("searchLangsLabel")}</label>
-        <div className="multiselect">
-          {boot.search_languages.map((l) => (
-            <button
-              type="button"
-              key={l.code}
-              className={
-                "ms-chip " + (searchLanguages.includes(l.code) ? "active" : "")
-              }
-              onClick={() => toggleLang(l.code)}
-            >
-              {getLangName(code, l.code)}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {!compact && (
-        <div className="example-prompts">
-          {boot.example_prompts.map((p, i) => (
-            <button
-              type="button"
-              key={i}
-              className="example-prompt"
-              onClick={() => !busy && onSend(p.text)}
-            >
-              {p.icon} {p.text}
-            </button>
-          ))}
-        </div>
-      )}
 
       <hr className="hr-glow" />
     </div>
