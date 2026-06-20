@@ -285,7 +285,7 @@ label.field-label {
 /* landing layout: language picker on top, theme label above the main bar */
 .lang-select { margin-top: 1.9rem; }
 .field-label.lang-label { font-size: 1.05rem; color: #c9c5dd; margin-bottom: .7rem; }
-.theme-label { margin-top: 3.2rem; }
+.field-label.theme-label { margin-top: 3.2rem; }
 .theme-label + .chat-bar { margin-top: 1.2rem; }
 
 /* secondary "search by artist & song" bar */
