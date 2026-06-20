@@ -111,7 +111,7 @@ p, li { font-family: 'Inter', 'Segoe UI', sans-serif; }
 .hero-sub {
     font-family: 'Inter', sans-serif;
     color: #8f8aa8; font-size: 1.2rem; line-height: 1.4;
-    margin-top: .35rem; max-width: 760px;
+    margin-top: .6rem; max-width: 760px;
 }
 .hero-logo img { max-width: 520px; width: 100%; display: block; margin-bottom: .4rem; }
 
@@ -134,7 +134,7 @@ p, li { font-family: 'Inter', 'Segoe UI', sans-serif; }
 .studio-prompt::before { content: '> '; color: #22d3ee; }
 
 .hr-glow {
-    height: 2px; border: 0; margin: 1.2rem 0 1.7rem 0; border-radius: 2px;
+    height: 2px; border: 0; margin: 2rem 0 1.7rem 0; border-radius: 2px;
     background: linear-gradient(90deg, #ff2d78, #f97316 45%, #22d3ee 75%, transparent);
     box-shadow: 0 0 12px rgba(249,115,22,.5);
     opacity: .85;
@@ -246,7 +246,7 @@ label.field-label {
 
 /* multiselect chips */
 .multiselect {
-    display: flex; flex-wrap: wrap; gap: .4rem;
+    display: flex; flex-wrap: wrap; gap: .55rem .5rem;
 }
 .ms-chip {
     border-radius: 999px; padding: 5px 13px; cursor: pointer;
@@ -263,7 +263,7 @@ label.field-label {
 }
 
 /* example prompts (compact chips) */
-.example-prompts { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .85rem; }
+.example-prompts { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1.15rem; }
 .example-prompt {
     text-align: left; cursor: pointer;
     border-radius: 10px; padding: .45rem .75rem;
@@ -283,14 +283,14 @@ label.field-label {
 .chat-bar .chat-input { flex: 1; }
 
 /* landing layout: language picker on top, theme label above the main bar */
-.lang-select { margin-top: 1.4rem; }
-.field-label.lang-label { font-size: 1.05rem; color: #c9c5dd; margin-bottom: .55rem; }
-.theme-label { margin-top: 1.4rem; }
-.theme-label + .chat-bar { margin-top: .4rem; }
+.lang-select { margin-top: 1.9rem; }
+.field-label.lang-label { font-size: 1.05rem; color: #c9c5dd; margin-bottom: .7rem; }
+.theme-label { margin-top: 2.1rem; }
+.theme-label + .chat-bar { margin-top: .55rem; }
 
 /* secondary "search by artist & song" bar */
-.seed-search { margin-top: 1rem; }
-.seed-search .field-label { margin-bottom: .45rem; }
+.seed-search { margin-top: 1.7rem; }
+.seed-search .field-label { margin-bottom: .55rem; }
 .seed-bar { margin-top: 0; }
 .seed-hint {
     margin-top: .5rem; font-size: .85rem; color: #ffb38a;

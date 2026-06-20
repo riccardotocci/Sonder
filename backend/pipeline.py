@@ -20,8 +20,6 @@ from core import (
     MusixmatchError,
     AudioDBClient,
     AudioDBError,
-    MusicBrainzClient,
-    MusicBrainzError,
     Storyteller,
     StorytellerError,
     SpotifyClient,
@@ -43,25 +41,6 @@ from .constants import (
     compact_text,
     user_facing_llm_error,
 )
-
-
-@functools.lru_cache(maxsize=256)
-def _mb_artist_origin(artist: str) -> tuple[str, str]:
-    """Restituisce ``(citta', paese_iso2)`` di un artista da MusicBrainz.
-
-    In cache (a livello di processo) per due motivi: gli stessi artisti ricorrono
-    tra i brani di una playlist e tra build successive, e MusicBrainz anonimo
-    limita a ~1 req/s — la cache riduce drasticamente le chiamate (e quindi il
-    rischio di rate-limit) quando l'enrichment gira in parallelo.
-    """
-    try:
-        results = MusicBrainzClient().search_artist(artist, limit=1)
-    except MusicBrainzError:
-        return ("", "")
-    if not results:
-        return ("", "")
-    mb = results[0]
-    return (mb.city, mb.country or "")
 
 
 # --------------------------------------------------------------------------- #
@@ -198,9 +177,9 @@ def isrc_country(isrc: str | None) -> str | None:
 
     Il primo gruppo di un ISRC (es. ``IT-B00-25-00020`` / ``ITB002500020`` -> ``IT``)
     e' il codice del paese del *registrant* dell'ISRC: e' il paese di REGISTRAZIONE
-    del codice, NON necessariamente il paese di pubblicazione del brano. Va quindi
-    usato solo come fallback quando manca il paese dell'artista
-    (MusicBrainz/TheAudioDB).
+    del codice, NON necessariamente il paese di pubblicazione del brano: e' l'unica
+    fonte usata per la nazione del brano nello Studio (l'ISRC arriva da Musixmatch
+    ``track.get`` o, in fallback, da Spotify).
 
     Funzione pura e tollerante: input vuoti/``None``/malformati restituiscono
     ``None`` senza sollevare eccezioni. Ritorna il prefisso a 2 lettere in
@@ -234,6 +213,32 @@ def _resolve_isrc(title: str, artist: str, user_token: str = "") -> str:
     except Exception:  # noqa: BLE001
         return ""
     return (track.isrc if track else "") or ""
+
+
+@functools.lru_cache(maxsize=512)
+def _musixmatch_isrc(track_id: str) -> str:
+    """ISRC di una traccia dal catalogo Musixmatch (``track.get``).
+
+    ``track.search`` restituisce un oggetto traccia ridotto SENZA ISRC, mentre
+    ``track.get`` espone ``track_isrc`` (+ ``commontrack_isrcs``). E' la fonte
+    primaria della nazione del brano: cosi' la geografia funziona anche senza
+    Spotify. Cache di processo (lo stesso track_id ricorre tra build) e tollerante:
+    ritorna "" quando Musixmatch non e' configurato, manca il track_id o la
+    chiamata fallisce.
+    """
+    if not settings.musixmatch_ready or not track_id:
+        return ""
+    try:
+        tid = int(track_id)
+    except (TypeError, ValueError):
+        return ""
+    if tid <= 0:
+        return ""
+    try:
+        track = MusixmatchClient().get_track(tid)
+    except Exception:  # noqa: BLE001
+        return ""
+    return (getattr(track, "isrc", "") if track else "") or ""
 
 
 @functools.lru_cache(maxsize=512)
@@ -839,6 +844,25 @@ def build_studio(
                     t["track_id"] = str(best.track_id)
                     t["has_lyrics"] = best.has_lyrics
                     t["has_richsync"] = best.has_richsync
+                    # Spotify ID dal catalogo Musixmatch (stesso dato che darebbe
+                    # track.lyrics.fingerprint): costruisce l'URI esatto del player
+                    # SENZA ricerca testuale fuzzy ne' login Spotify (l'embed e'
+                    # pubblico) e fa puntare la freccia "apri su Spotify" al brano
+                    # giusto. Spotify resta un fallback piu' sotto.
+                    if best.spotify_id:
+                        t.setdefault("spotify_id", best.spotify_id)
+                        t.setdefault("uri", f"spotify:track:{best.spotify_id}")
+                    # Copertina dell'album dal catalogo Musixmatch: da' a ogni brano
+                    # un'artwork reale anche senza TheAudioDB/Spotify (l'hero e le card
+                    # dello Studio leggono t["image"]; t["cover"] resta il campo
+                    # dedicato). Durata ed explicit completano i metadati mostrati.
+                    if best.cover_art:
+                        t.setdefault("cover", best.cover_art)
+                        if not t.get("image"):
+                            t["image"] = best.cover_art
+                    if best.duration:
+                        t.setdefault("duration", best.duration)
+                    t.setdefault("explicit", best.explicit)
                     # Mood comes from the real Musixmatch genre, not the LLM.
                     if best.genres and not t.get("mood"):
                         t["mood"] = best.genres[0]
@@ -897,13 +921,9 @@ def build_studio(
                 if a:
                     bio = a.biography(lang_code) or ""
                     t["image"] = a.image_url
-                    # Origin comes from real artist data, not the LLM. La v2
-                    # fornisce strCountryCode (ISO2 pulito) per le coordinate e
-                    # strCountry come etichetta leggibile.
-                    if a.country and not t.get("origin"):
-                        t["origin"] = a.country
-                    if a.country_code and not t.get("origin_code"):
-                        t["origin_code"] = a.country_code
+                    # La geografia NON usa piu' TheAudioDB: la nazione del brano
+                    # arriva solo dal prefisso ISRC (vedi loop finale). Qui restano
+                    # solo bio, immagine e mood reali dell'artista.
                     # Mood reale di TheAudioDB a livello artista (fallback).
                     if a.mood and not t.get("mood"):
                         t["mood"] = a.mood
@@ -939,24 +959,53 @@ def build_studio(
             except AudioDBError:
                 pass
 
-        # MusicBrainz (no API key): fallback per il PAESE d'origine quando TheAudioDB
-        # non e' disponibile (chiave demo) o non lo fornisce. La mappa lavora a livello
-        # di stato/paese, quindi non si geocodifica piu' la citta': basta il codice ISO2
-        # del paese, che diventa anche l'etichetta (convertita in nome leggibile).
-        if artist and not t.get("origin_code"):
-            _mb_city, mb_country = _mb_artist_origin(artist)
-            if mb_country:
-                t["origin_code"] = mb_country
-                if not t.get("origin"):
-                    t["origin"] = country_name(mb_country)
-
-        # Etichetta a livello paese: se l'origine e' un codice ISO2 grezzo (es. "GB")
-        # la si converte nel nome leggibile ("United Kingdom"). Le coordinate sono il
-        # centroide del paese e vengono risolte nel loop finale da origin_code/origin.
-        if t.get("origin"):
-            t["origin"] = country_name(str(t["origin"]))
+        # La nazione d'origine del brano viene derivata ESCLUSIVAMENTE dal prefisso
+        # ISRC (primi 2 caratteri) nel loop finale: niente piu' TheAudioDB ne'
+        # MusicBrainz per la geografia.
 
         t["_bio"] = bio
+
+        # ISRC dal catalogo Musixmatch: track.get espone track_isrc/commontrack_isrcs
+        # (track.search no). E' la fonte PRIMARIA della nazione del brano, cosi' la
+        # geografia funziona anche senza Spotify; Spotify resta come fallback sotto.
+        if not t.get("isrc"):
+            mx_isrc = _musixmatch_isrc(str(t.get("track_id") or ""))
+            if mx_isrc:
+                t["isrc"] = mx_isrc
+
+        # Lyric Fingerprint (track.lyrics.fingerprint.post, prodotto "Sentinel"):
+        # "dove possibile" stabilizza l'identita' del brano partendo dal TESTO,
+        # recuperando Spotify ID/ISRC/genere canonici quando la ricerca per
+        # titolo/artista e' incerta. La risposta ha gli stessi campi di track.get.
+        # OFF di default (settings.musixmatch_use_fingerprint): e' un endpoint
+        # Enterprise e su piani inferiori risponde 403. Degrada in silenzio.
+        if (
+            mx
+            and settings.musixmatch_use_fingerprint
+            and not (t.get("spotify_id") and t.get("isrc"))
+        ):
+            try:
+                fp_matches = mx.fingerprint_lyrics(str(t.get("lyrics") or ""), limit=1)
+            except MusixmatchError:
+                fp_matches = []
+            if fp_matches:
+                fp_track, fp_similarity = fp_matches[0]
+                # Solo match molto forti possono correggere l'identita' del brano.
+                if fp_similarity >= 80.0:
+                    if fp_track.spotify_id and not t.get("spotify_id"):
+                        t["spotify_id"] = fp_track.spotify_id
+                        t.setdefault("uri", f"spotify:track:{fp_track.spotify_id}")
+                    if fp_track.isrc and not t.get("isrc"):
+                        t["isrc"] = fp_track.isrc
+                    if fp_track.genres and not t.get("genre"):
+                        t["genre"] = fp_track.genres[0]
+                        t.setdefault("mx_genres", list(fp_track.genres))
+                    if fp_track.cover_art and not t.get("cover"):
+                        t["cover"] = fp_track.cover_art
+                        if not t.get("image"):
+                            t["image"] = fp_track.cover_art
+                    if fp_track.duration and not t.get("duration"):
+                        t["duration"] = fp_track.duration
 
         # Resolve the track on Spotify to get its URI (used by the studio player).
         # valence/energy NON arrivano piu' da Spotify (endpoint deprecato): vedi il
@@ -1036,16 +1085,20 @@ def build_studio(
         t.setdefault("audiodb_speech", "")
         t.setdefault("mood", "")
         t.setdefault("genre", "")
+        t.setdefault("spotify_id", "")
+        t.setdefault("cover", "")
+        t.setdefault("duration", 0)
+        t.setdefault("explicit", False)
         t.setdefault("mx_genres", [])
         t.setdefault("mx_moods", [])
         t.setdefault("mx_themes", [])
-        # Fallback country dal prefisso ISRC: se l'arricchimento artista
-        # (TheAudioDB/MusicBrainz) non ha prodotto un paese, ricaviamo l'ISO2 dal
-        # primo gruppo dell'ISRC. NB: e' il paese di REGISTRAZIONE dell'ISRC, non
-        # garantito uguale al paese di pubblicazione: per questo resta solo un
-        # fallback e si applica solo quando il prefisso e' un paese reale e mappabile
-        # (i prefissi ISRC non-paese come "QM"/"ZZ" non colorerebbero la mappa).
-        if not t.get("origin_code") and not t.get("origin"):
+        # Nazione del brano dal prefisso ISRC (primi 2 caratteri = paese del
+        # registrant dell'ISRC). E' l'UNICA fonte per la geografia: niente
+        # TheAudioDB/MusicBrainz. NB: e' il paese di REGISTRAZIONE, non garantito
+        # uguale al paese di pubblicazione, e si applica solo quando il prefisso e'
+        # un paese reale e mappabile (i prefissi non-paese come "QM"/"ZZ" restano
+        # senza pin sulla mappa).
+        if not t.get("origin_code"):
             isrc_cc = isrc_country(str(t.get("isrc") or ""))
             iso2 = to_iso2(isrc_cc) if isrc_cc else ""
             if iso2:

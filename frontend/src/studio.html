@@ -464,6 +464,11 @@
     const bits = [t.artist];
     if (t.origin) bits.push('📍 ' + t.origin);
     if (t.mood) bits.push(t.mood);
+    if (t.album) bits.push(t.album);
+    if (t.duration) {
+      const mm = Math.floor(t.duration / 60), ss = t.duration % 60;
+      bits.push(mm + ':' + String(ss).padStart(2, '0'));
+    }
     cMeta.textContent = bits.filter(Boolean).join('  ·  ');
     renderSpeechBlock(t);
     showLyrics(i);

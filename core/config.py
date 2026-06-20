@@ -118,6 +118,16 @@ class Settings:
     musixmatch_use_meaning: bool = field(
         default_factory=lambda: _env_bool("MUSIXMATCH_USE_MEANING", False)
     )
+    # Lyric Fingerprint (track.lyrics.fingerprint.post, prodotto "Sentinel"): usa il
+    # TESTO per verificare/recuperare l'identita' canonica del brano (Spotify ID/
+    # ISRC/genere/cover) quando la ricerca per titolo/artista e' incerta. Restituisce
+    # gli stessi campi di track.get. ON di default: richiede un piano Enterprise, ma
+    # su piani inferiori l'endpoint risponde 403 e la chiamata degrada in silenzio
+    # (nessun effetto), quindi e' sicuro lasciarlo attivo. Disattivabile con
+    # MUSIXMATCH_USE_FINGERPRINT=false.
+    musixmatch_use_fingerprint: bool = field(
+        default_factory=lambda: _env_bool("MUSIXMATCH_USE_FINGERPRINT", True)
+    )
     # --- TheAudioDB (v2 Premium: la chiave va nell'header X-API-KEY) ---
     # La chiave di test "123" funziona solo con la vecchia v1 e viene rifiutata
     # dalla v2, quindi non viene piu' usata come default: senza chiave Premium la
