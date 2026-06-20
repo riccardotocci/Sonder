@@ -1035,6 +1035,15 @@ def build_studio(
                 # invece di una ricerca testuale per titolo/artista (approssimativa).
                 if found and found.isrc:
                     t.setdefault("isrc", found.isrc)
+                # Copertina album da Spotify (found.album_image = album.images[0].url):
+                # artwork REALE dell'album, NON una foto-artista. Musixmatch NON
+                # fornisce le cover (l'API ufficiale non ha il campo e il vecchio
+                # ws/1.1 ritorna solo "nocover.png"), quindi Spotify e' la fonte
+                # delle copertine quando collegato. Riempie t["cover"] solo se
+                # Musixmatch non ne ha gia' data una, cosi' la card "Dettagli brano
+                # per brano" mostra l'artwork album senza mai ricorrere a TheAudioDB.
+                if found and found.album_image and not t.get("cover"):
+                    t["cover"] = found.album_image
             except SpotifyError:
                 pass
 
