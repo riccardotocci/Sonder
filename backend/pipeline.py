@@ -148,6 +148,16 @@ def musixmatch_track_payload(
         "has_lyrics": track.has_lyrics,
         "has_richsync": track.has_richsync,
     }
+    # Copertina album dal catalogo Musixmatch (track.search/track.get espongono
+    # album_coverart_*). La impostiamo SUBITO dal risultato di ricerca, cosi' la
+    # card "Dettagli brano per brano" ha l'artwork REALE di Musixmatch anche se
+    # l'enrichment (get_track) non viene rieseguito o non la ritrova. Solo se non
+    # vuota, per non disabilitare il fallback di build_studio
+    # (``t.setdefault("cover", best.cover_art)``). Niente foto-artista TheAudioDB:
+    # la card legge esclusivamente ``cover``.
+    cover_art = str(getattr(track, "cover_art", "") or "").strip()
+    if cover_art:
+        payload["cover"] = cover_art
     # Genere rinforzato da Musixmatch (generi primari della traccia).
     genres = [str(g).strip() for g in (getattr(track, "genres", None) or []) if str(g).strip()]
     if genres:
