@@ -155,19 +155,19 @@ def _detect_narration_lang(text: str) -> str:
 
 
 GREETINGS: dict[str, str] = {
-    "Italiano": "Ciao, sono **Sonder**. Di cosa vuoi parlare oggi? ",
-    "English": "Hi, I'm **Sonder**. What would you like to talk about? ",
-    "Français": "Salut, je suis **Sonder**. De quoi veux-tu parler ? ",
-    "Español": "Hola, soy **Sonder**. ¿De qué quieres hablar? ",
-    "Deutsch": "Hallo, ich bin **Sonder**. Worüber möchtest du sprechen? ",
-    "Português": "Olá, sou **Sonder**. Sobre o que queres falar? ",
-    "Nederlands": "Hoi, ik ben **Sonder**. Waarover wil je praten? ",
-    "Polski": "Cześć, jestem **Sonder**. O czym chcesz porozmawiać? ",
-    "Русский": "Привет, я **Sonder**. О чём хочешь поговорить? ",
-    "日本語": "こんにちは、**Sonder** です。何について話したいですか？ ",
-    "中文": "你好，我是 **Sonder**。你想聊些什么？ ",
-    "한국어": "안녕하세요, 저는 **Sonder** 입니다. 무엇에 대해 이야기하고 싶으신가요? ",
-    "العربية": "مرحبًا، أنا **Sonder**. عن ماذا تريد أن نتحدث؟ ",
+    "Italiano": "**Sonder** — ogni canzone una storia diversa",
+    "English": "**Sonder** — each song a different story",
+    "Français": "**Sonder** — chaque chanson une histoire différente",
+    "Español": "**Sonder** — cada canción una historia diferente",
+    "Deutsch": "**Sonder** — jeder Song eine andere Geschichte",
+    "Português": "**Sonder** — cada canção uma história diferente",
+    "Nederlands": "**Sonder** — elk lied een ander verhaal",
+    "Polski": "**Sonder** — każda piosenka to inna historia",
+    "Русский": "**Sonder** — каждая песня — своя история",
+    "日本語": "**Sonder** — すべての曲に、それぞれの物語を",
+    "中文": "**Sonder** — 每首歌，都是一个不同的故事",
+    "한국어": "**Sonder** — 모든 노래엔 저마다의 이야기",
+    "العربية": "**Sonder** — لكل أغنية قصة مختلفة",
 }
 
 REFUSALS: dict[str, str] = {
