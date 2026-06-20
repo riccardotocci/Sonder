@@ -7,6 +7,7 @@ import ThinkingPipeline, {
 } from "./components/ThinkingPipeline.jsx";
 import Studio from "./components/Studio.jsx";
 import LanguageSelector from "./components/LanguageSelector.jsx";
+import About from "./components/About.jsx";
 import {
   LangProvider,
   getInitialLang,
@@ -43,6 +44,7 @@ export default function App() {
   const [llmModel, setLlmModel] = useState("");
   const [spotify, setSpotify] = useState(null); // { access_token, refresh_token, ... }
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [aboutOpen, setAboutOpen] = useState(false);
   const [uiLang, setUiLang] = useState(getInitialLang);
   const spotifyRestored = useRef(false);
   // Bumped on every New chat (and every send) so a slow in-flight /api/chat
@@ -388,6 +390,7 @@ export default function App() {
             onNewChat={newChat}
             token={token}
             onCollapse={() => setSidebarOpen(false)}
+            onOpenAbout={() => setAboutOpen(true)}
           />
         ) : (
           <button
@@ -459,6 +462,7 @@ export default function App() {
             />
           )}
         </div>
+        {aboutOpen && <About onClose={() => setAboutOpen(false)} />}
       </div>
     </LangProvider>
   );

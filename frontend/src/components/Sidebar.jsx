@@ -24,6 +24,7 @@ export default function Sidebar({
   onNewChat,
   token,
   onCollapse,
+  onOpenAbout,
 }) {
   const { t } = useT();
   const [stayLoggedIn, setStayLoggedIn] = useState(true);
@@ -137,6 +138,19 @@ export default function Sidebar({
       </div>
 
       <div style={{ flex: 1 }} />
+
+      <button
+        className="about-banner"
+        onClick={onOpenAbout}
+        aria-label={t("aboutBanner")}
+      >
+        <span className="about-banner-glyph">✦</span>
+        <span className="about-banner-text">
+          <span className="about-banner-title">{t("aboutBanner")}</span>
+          <span className="about-banner-sub">{t("aboutBannerSub")}</span>
+        </span>
+        <span className="about-banner-arrow">→</span>
+      </button>
     </aside>
   );
 }
