@@ -26,7 +26,7 @@ import {
 } from "./spotify.js";
 
 // Imposta a false per nascondere temporaneamente la pipeline di pensiero.
-const SHOW_THINKING_PIPELINE = true;
+const SHOW_THINKING_PIPELINE = false;
 
 export default function App() {
   const [boot, setBoot] = useState(null);
