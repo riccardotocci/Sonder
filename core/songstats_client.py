@@ -26,18 +26,28 @@ logger = logging.getLogger("sonder.songstats")
 API_BASE = "https://api.songstats.com/enterprise/v1"
 
 # Metriche "interessanti" e il loro ordine di visualizzazione nei grafici.
-# La chiave e' il nome del campo Songstats, il valore l'etichetta leggibile.
+# La chiave e' il nome del campo Songstats (vedi response /tracks/stats -> stats[].data,
+# documentato nell'SDK ufficiale https://github.com/Songstats/songstats-node-sdk),
+# il valore l'etichetta leggibile. L'ordine qui definisce la priorita' nei grafici.
 METRIC_LABELS: dict[str, str] = {
     "streams_total": "Streams",
     "streams_current": "Streams",
     "spotify_streams_total": "Spotify streams",
+    "popularity": "Spotify popularity",
     "popularity_current": "Spotify popularity",
-    "followers_total": "Followers",
     "playlists_total": "Playlists",
+    "playlists_total_reach": "Playlist reach",
     "playlist_reach_total": "Playlist reach",
-    "views_total": "Video views",
-    "shazams_total": "Shazams",
+    "playlists_editorial_total": "Editorial playlists",
+    "playlists_editorial_total_reach": "Editorial reach",
+    "playlists_algotorial_total": "Algorithmic playlists",
+    "charts_total": "Chart entries",
+    "saves_total": "Saves",
     "favorites_total": "Favorites",
+    "followers_total": "Followers",
+    "views_total": "Video views",
+    "likes_total": "Likes",
+    "shazams_total": "Shazams",
 }
 
 # Campi che rappresentano un conteggio di riproduzioni reali (per la soglia task 4).
@@ -129,19 +139,14 @@ class SongstatsClient:
     # Parsing helpers
     # ------------------------------------------------------------------ #
     @staticmethod
-    def _first_result(payload: dict[str, Any]) -> dict[str, Any]:
-        for key in ("results", "tracks", "artists", "data", "items"):
-            value = payload.get(key)
-            if isinstance(value, list) and value:
-                return value[0] if isinstance(value[0], dict) else {}
-            if isinstance(value, dict) and value:
-                return value
-        return {}
-
-    @staticmethod
     def _track_info(payload: dict[str, Any]) -> dict[str, Any]:
-        """Estrae il blocco di metadati della traccia dalla risposta /tracks/stats."""
-        for key in ("track_info", "track", "info", "data"):
+        """Estrae il blocco di metadati della traccia dalla risposta /tracks/stats.
+
+        La risposta documentata (SDK ufficiale) incapsula i metadati sotto la chiave
+        ``track`` (con campi ``name``, ``artists``, ``cover_url``, ``songstats_track_id``).
+        Gli altri nomi sono mantenuti come fallback difensivi per varianti dell'API.
+        """
+        for key in ("track", "track_info", "info", "data"):
             value = payload.get(key)
             if isinstance(value, dict) and value:
                 return value
@@ -207,82 +212,15 @@ class SongstatsClient:
             songstats_id=str(
                 info.get("songstats_track_id") or info.get("id") or ""
             ),
-            name=str(info.get("title") or name),
+            name=str(info.get("name") or info.get("title") or name),
             subtitle=self._artists_text(info) or artist,
-            avatar=str(info.get("avatar") or info.get("image_url") or ""),
+            avatar=str(
+                info.get("cover_url")
+                or info.get("avatar")
+                or info.get("image_url")
+                or ""
+            ),
             sources=sources,
             raw=payload,
         )
 
-    def track_stats(self, title: str, artist: str = "") -> Optional[SongstatsStats]:
-        """Cerca la traccia per titolo (+ artista) e ne restituisce le statistiche."""
-        query = " ".join(p for p in (title, artist) if p).strip()
-        if not query:
-            return None
-        try:
-            search = self._request("tracks/search", q=query, limit=1)
-        except SongstatsError as exc:
-            logger.warning("Songstats track search failed: %s", exc)
-            raise
-        result = self._first_result(search)
-        track_id = str(
-            result.get("songstats_track_id")
-            or result.get("songstats_id")
-            or result.get("id")
-            or ""
-        )
-        if not track_id:
-            return None
-        artists = result.get("artists") or []
-        artist_name = ""
-        if isinstance(artists, list) and artists:
-            artist_name = ", ".join(
-                str(a.get("name", a)) if isinstance(a, dict) else str(a) for a in artists
-            )
-        try:
-            stats_payload = self._request("tracks/stats", songstats_track_id=track_id)
-        except SongstatsError as exc:
-            logger.warning("Songstats track stats failed: %s", exc)
-            raise
-        return SongstatsStats(
-            songstats_id=track_id,
-            name=str(result.get("title") or title),
-            subtitle=artist_name or artist,
-            avatar=str(result.get("avatar") or result.get("image_url") or ""),
-            sources=self._extract_sources(stats_payload),
-            raw=stats_payload,
-        )
-
-    def artist_stats(self, name: str) -> Optional[SongstatsStats]:
-        """Cerca l'artista per nome e ne restituisce le statistiche aggregate."""
-        if not name or not name.strip():
-            return None
-        try:
-            search = self._request("artists/search", q=name.strip(), limit=1)
-        except SongstatsError as exc:
-            logger.warning("Songstats artist search failed: %s", exc)
-            raise
-        result = self._first_result(search)
-        artist_id = str(
-            result.get("songstats_artist_id")
-            or result.get("songstats_id")
-            or result.get("id")
-            or ""
-        )
-        if not artist_id:
-            return None
-        try:
-            stats_payload = self._request("artists/stats", songstats_artist_id=artist_id)
-        except SongstatsError as exc:
-            logger.warning("Songstats artist stats failed: %s", exc)
-            raise
-        genres = result.get("genres") or []
-        subtitle = ", ".join(str(g) for g in genres[:3]) if isinstance(genres, list) else ""
-        return SongstatsStats(
-            songstats_id=artist_id,
-            name=str(result.get("name") or name),
-            subtitle=subtitle,
-            avatar=str(result.get("avatar") or result.get("image_url") or ""),
-            sources=self._extract_sources(stats_payload),
-            raw=stats_payload,
-        )

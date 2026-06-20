@@ -128,7 +128,16 @@ class SpotifyClient:
 
     @property
     def user_client(self) -> spotipy.Spotify:
-        """Client autenticato come utente (necessario per creare playlist)."""
+        """Client autenticato come utente (necessario per creare playlist).
+
+        Preferisce il token utente (flusso PKCE): cosi' la creazione playlist
+        funziona col solo ``SPOTIFY_CLIENT_ID`` pubblico, senza secret. Senza
+        token utente ricade sul flusso OAuth interattivo (richiede id + secret).
+        """
+        if self.access_token:
+            if self._user is None:
+                self._user = spotipy.Spotify(auth=self.access_token)
+            return self._user
         self._require_credentials()
         if self._user is None:
             auth = SpotifyOAuth(

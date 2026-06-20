@@ -34,7 +34,6 @@ from core.config import (
 )
 from core.musixmatch_client import MusixmatchClient, MusixmatchError
 from core.audiodb_client import AudioDBClient, AudioDBError
-from core.lastfm_client import LastFMClient, LastFMError
 from core.storyteller import Storyteller, StorytellerError
 from core.spotify_client import SpotifyClient, SpotifyError
 from core.songstats_client import SongstatsClient, SongstatsError
@@ -588,22 +587,6 @@ CUSTOM_CSS = """
     }
     section[data-testid="stSidebar"] hr { border-color: rgba(255,255,255,.08); }
 
-    /* Riquadro stato API in sidebar */
-    .api-box {
-        background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.08);
-        border-radius: 12px; padding: 10px 12px;
-    }
-    .api-row {
-        display: flex; align-items: center; gap: 8px;
-        font-family: 'JetBrains Mono', monospace; font-size: .76rem;
-        color: #c9c5dd; padding: 3px 0;
-    }
-    .api-dot {
-        width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto;
-        box-shadow: 0 0 8px currentColor;
-    }
-    .api-state { margin-left: auto; color: #8f8aa8; font-size: .7rem; }
-
     /* Bottoni standard e link-button in stile pannello */
     .stButton button, .stLinkButton a {
         border-radius: 12px !important;
@@ -755,87 +738,9 @@ def render_llm_model_selector() -> None:
         st.caption(f"Using `{chosen}` for the next LLM calls.")
 
 
-def render_status_sidebar() -> None:
-    st.sidebar.markdown("### 🔌 API Status")
-    rows = []
-    statuses: dict[str, bool] = dict(settings.status())
-    # Always show ElevenLabs even if the module was cached before the property was added.
-    if "ElevenLabs TTS" not in statuses:
-        statuses["ElevenLabs TTS"] = getattr(settings, "elevenlabs_ready", False)
-    for service, ready in statuses.items():
-        dot = "#2de26d" if ready else "#ff4d6d"
-        label = "ready" if ready else "missing key"
-        rows.append(
-            f'<div class="api-row"><span class="api-dot" style="background:{dot};"></span>'
-            f'<b>{service}</b><span class="api-state">{label}</span></div>'
-        )
-    st.sidebar.markdown(
-        f'<div class="api-box">{"".join(rows)}</div>', unsafe_allow_html=True
-    )
-    st.sidebar.caption("Set keys in the `.env` file (see `.env.example`).")
-    st.sidebar.markdown("---")
-
-
 # --------------------------------------------------------------------------- #
 # Tool musicali (contesto + playlist)
 # --------------------------------------------------------------------------- #
-def fetch_song_context(title: str, artist: str, lang_code: str) -> tuple[str, list[str]]:
-    """Recupera testo (Musixmatch) e biografia (TheAudioDB) come contesto per la chat."""
-    parts: list[str] = []
-    notes: list[str] = []
-
-    if title and settings.musixmatch_ready:
-        try:
-            mx_client = MusixmatchClient()
-            matches = mx_client.search_tracks(track=title, artist=artist, has_lyrics=True, limit=1)
-            if matches:
-                track = matches[0]
-                lyrics_text, richsync_body, translated_text = fetch_musixmatch_text(
-                    mx_client,
-                    track.track_id,
-                    track.has_lyrics,
-                    track.has_richsync,
-                    translation_lang=MUSIXMATCH_TRANSLATION_LANG_BY_CODE.get(
-                        lang_code.upper(), "en"
-                    ),
-                )
-                parts.append(f"Brano: «{track.track_name or title}» di {track.artist_name or artist or 'artista sconosciuto'}")
-                if richsync_body:
-                    parts.append("Richsync word-level (Musixmatch): disponibile")
-                if translated_text:
-                    parts.append("Traduzione testo (Musixmatch):\n" + translated_text)
-                if lyrics_text:
-                    parts.append("Testo (Musixmatch):\n" + lyrics_text)
-            else:
-                notes.append("Musixmatch: no track found.")
-        except MusixmatchError as exc:
-            notes.append(f"Musixmatch: {exc}")
-    elif title:
-        notes.append("Musixmatch not configured: lyrics were not fetched.")
-
-    bio = ""
-    if artist and settings.audiodb_ready:
-        try:
-            artist_obj = AudioDBClient().get_artist(artist)
-            if artist_obj:
-                bio = artist_obj.biography(lang_code)
-                if bio:
-                    parts.append(f"Biografia di {artist} (TheAudioDB):\n{bio}")
-        except AudioDBError as exc:
-            notes.append(f"TheAudioDB: {exc}")
-
-    # Fallback: se TheAudioDB non ha dato nulla, prova Last.fm.
-    if artist and not bio and settings.lastfm_ready:
-        try:
-            lf_bio = LastFMClient().get_biography(name=artist, lang=lang_code)
-            if lf_bio:
-                parts.append(f"Biografia di {artist} (Last.fm):\n{lf_bio}")
-        except LastFMError as exc:
-            notes.append(f"Last.fm: {exc}")
-
-    return "\n\n".join(parts), notes
-
-
 def render_track_cards(tracks: list[dict[str, str]]) -> None:
     for index, t in enumerate(tracks):
         color = PALETTE[index % len(PALETTE)]
@@ -1301,10 +1206,9 @@ def render_spotify_login(container) -> None:
         state=state,
         challenge=challenge,
     )
-    # NB: Spotify Accounts rifiuta di aprirsi dentro frame/webview annidati e
-    # molti ambienti (webview, preview) bloccano anche target="_top". Apriamo
-    # quindi l'OAuth in una scheda esterna (target="_blank"): il token viene
-    # salvato lato server, così la scheda originale lo riprende al refresh.
+    # NB: Spotify Accounts rifiuta di aprirsi dentro frame/webview annidati.
+    # Per restare nella STESSA finestra usiamo target="_top": l'intera finestra
+    # naviga verso Spotify e, dopo l'autorizzazione, torna all'app via redirect.
     stay_logged = container.checkbox(
         "Stay logged in",
         value=bool(_persistent_token_store().get("token") or st.session_state.get("sp_stay_logged")),
@@ -1314,7 +1218,7 @@ def render_spotify_login(container) -> None:
     # al redirect OAuth che azzera st.session_state.
     _stay_logged_store()[state] = stay_logged
     container.markdown(
-        f'<a href="{html.escape(auth_url)}" target="_blank" rel="noopener noreferrer" '
+        f'<a href="{html.escape(auth_url)}" target="_top" rel="noopener noreferrer" '
         'style="display:block;text-align:center;padding:10px 14px;'
         'border-radius:10px;font-weight:700;text-decoration:none;'
         'color:#04150b;background:linear-gradient(100deg,#1db954,#2de26d);'
@@ -1323,8 +1227,8 @@ def render_spotify_login(container) -> None:
         unsafe_allow_html=True,
     )
     container.caption(
-        "Spotify login opens in a new browser tab. After approving access, "
-        "come back here or refresh this tab."
+        "You'll be redirected to Spotify in this same window. "
+        "After approving access, you'll come right back here."
     )
 
 
@@ -1627,7 +1531,7 @@ def build_studio(
     translation_lang = translation_lang or musixmatch_translation_code(lang_name, lang_code)
 
     # 1) Pre-fetch in PARALLELO (task 9) per ogni brano: correzione metadati Musixmatch,
-    #    testo/richsync/traduzione, bio (AudioDB -> Last.fm) e immagine artista.
+    #    testo/richsync/traduzione, bio (AudioDB) e immagine artista.
     #    La catena Musixmatch -> AudioDB resta SEQUENZIALE dentro ogni worker (il nome
     #    artista canonico serve alla bio), ma i brani sono elaborati in parallelo.
     #    Ogni worker crea client propri: niente requests.Session condivise tra thread.
@@ -1653,7 +1557,7 @@ def build_studio(
                     t["track_id"] = str(best.track_id)
                     t["has_lyrics"] = best.has_lyrics
                     t["has_richsync"] = best.has_richsync
-                    artist = t["artist"]  # nome canonico per AudioDB / Last.fm
+                    artist = t["artist"]  # nome canonico per AudioDB
                     title = t["title"]
                     if not t.get("lyrics") and not t.get("richsync"):
                         lyrics_text, richsync_body, translated_text = fetch_musixmatch_text(
@@ -1727,13 +1631,6 @@ def build_studio(
                     if fact:
                         t["audio_db_fact"] = fact
             except AudioDBError:
-                pass
-
-        # 1c) Fallback bio da Last.fm
-        if not bio and settings.lastfm_ready and artist:
-            try:
-                bio = LastFMClient().get_biography(name=artist, lang=lang_code) or ""
-            except LastFMError:
                 pass
 
         t["_bio"] = bio  # campo temporaneo letto da studio_brief(), rimosso dopo
@@ -2965,7 +2862,7 @@ def render_songstats_section(studio: dict) -> None:
 # --------------------------------------------------------------------------- #
 def render_message(index: int, msg: dict) -> None:
     """Renderizza un singolo messaggio della chat (con eventuale playlist)."""
-    avatar = "💕" if msg["role"] == "assistant" else None
+    avatar = "🎵" if msg["role"] == "assistant" else None
     with st.chat_message(msg["role"], avatar=avatar):
         st.markdown(msg["content"])
 
@@ -3333,25 +3230,8 @@ def main() -> None:
         init_chat(ui_language)
 
     # Sidebar
-    render_status_sidebar()
     render_spotify_login(st.sidebar)
     st.sidebar.markdown("---")
-
-    # Contesto musicale opzionale (tool)
-    with st.sidebar.expander("🎵 Add song context (optional)"):
-        ctx_title = st.text_input("Title", key="ctx_title", placeholder="e.g. Sympathy for the Devil")
-        ctx_artist = st.text_input("Artist", key="ctx_artist", placeholder="e.g. The Rolling Stones")
-        if st.button("Load context", use_container_width=True):
-            ctx, notes = fetch_song_context(ctx_title, ctx_artist, lang_code)
-            st.session_state["context"] = ctx
-            for n in notes:
-                st.warning(n)
-            if ctx:
-                st.success("Context loaded: I'll use it in upcoming responses.")
-        if st.session_state.get("context"):
-            st.caption("✅ Context active")
-            if st.button("Remove context", use_container_width=True):
-                st.session_state["context"] = ""
 
     render_llm_model_selector()
 

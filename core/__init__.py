@@ -1,4 +1,4 @@
-"""Empathy for the Devil - pacchetto core.
+"""Sonder - pacchetto core.
 
 Gli export pubblici sono caricati in modo lazy: quando Streamlit importa
 ``core.config`` non deve inizializzare anche client non usati nel bootstrap.
@@ -19,9 +19,6 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "MusicBrainzClient": (".musicbrainz_client", "MusicBrainzClient"),
     "MusicBrainzError": (".musicbrainz_client", "MusicBrainzError"),
     "MBArtist": (".musicbrainz_client", "MBArtist"),
-    "LastFMClient": (".lastfm_client", "LastFMClient"),
-    "LastFMError": (".lastfm_client", "LastFMError"),
-    "LastFMArtist": (".lastfm_client", "LastFMArtist"),
     "Storyteller": (".storyteller", "Storyteller"),
     "StorytellerError": (".storyteller", "StorytellerError"),
     "EmotionalAnalysis": (".storyteller", "EmotionalAnalysis"),
@@ -30,6 +27,9 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "SongstatsClient": (".songstats_client", "SongstatsClient"),
     "SongstatsError": (".songstats_client", "SongstatsError"),
     "SongstatsStats": (".songstats_client", "SongstatsStats"),
+    "ReccoBeatsClient": (".reccobeats_client", "ReccoBeatsClient"),
+    "ReccoBeatsError": (".reccobeats_client", "ReccoBeatsError"),
+    "AudioFeatures": (".reccobeats_client", "AudioFeatures"),
 }
 
 
@@ -51,9 +51,6 @@ __all__ = [
     "MusicBrainzClient",
     "MusicBrainzError",
     "MBArtist",
-    "LastFMClient",
-    "LastFMError",
-    "LastFMArtist",
     "Storyteller",
     "StorytellerError",
     "EmotionalAnalysis",
@@ -62,5 +59,8 @@ __all__ = [
     "SongstatsClient",
     "SongstatsError",
     "SongstatsStats",
+    "ReccoBeatsClient",
+    "ReccoBeatsError",
+    "AudioFeatures",
     "__version__",
 ]

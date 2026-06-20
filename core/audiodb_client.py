@@ -1,49 +1,94 @@
-"""Client per le API TheAudioDB.
+"""Client per le API TheAudioDB (v2 / Premium).
 
-Recupera biografie multilingua e immagini degli artisti.
+Recupera biografie multilingua, immagini, contesto su brani/album e metadati
+(mood, tema, paese, ID MusicBrainz) degli artisti.
 Documentazione: https://www.theaudiodb.com/free_music_api
 
-La chiave di test gratuita v1 e' "123" (endpoint pubblico, rate-limited).
+La v2 e' riservata agli abbonati Premium: la chiave NON viaggia piu' nell'URL
+ma nell'header ``X-API-KEY``. Gli endpoint sono basati su path
+(``/search/artist/{nome}``, ``/lookup/artist/{id}``, ...) e in caso di errore
+restituiscono i normali codici di stato HTTP. La vecchia chiave di test "123"
+funziona solo con la v1 e viene rifiutata (400) dalla v2.
+
+Strategia: le risposte di *search* della v2 sono volutamente snelle (niente
+biografie multilingua, mood, tema, testi). I campi ricchi vivono negli endpoint
+di *lookup*, quindi per ogni entita' eseguiamo ``search`` (per ottenere l'ID) e
+poi ``lookup`` (per i dati completi). I risultati sono memorizzati in cache per
+istanza per non moltiplicare le richieste durante l'arricchimento di una traccia.
 """
 from __future__ import annotations
 
+import unicodedata
 from typing import Any, Optional, Union
+from urllib.parse import quote
 
 import requests
 
 from .config import settings
 
-API_BASE = "https://www.theaudiodb.com/api/v1/json"
+API_BASE = "https://www.theaudiodb.com/api/v2/json"
 
-# Mappa lingua -> campo biografia restituito da TheAudioDB.
-BIOGRAPHY_FIELDS: dict[str, str] = {
-    "IT": "strBiographyIT",
-    "EN": "strBiographyEN",
-    "FR": "strBiographyFR",
-    "DE": "strBiographyDE",
-    "ES": "strBiographyES",
-    "PT": "strBiographyPT",
-    "NL": "strBiographyNL",
-    "RU": "strBiographyRU",
-    "JP": "strBiographyJP",
-}
-DESCRIPTION_FIELDS: dict[str, str] = {
-    "IT": "strDescriptionIT",
-    "EN": "strDescriptionEN",
-    "FR": "strDescriptionFR",
-    "DE": "strDescriptionDE",
-    "ES": "strDescriptionES",
-    "PT": "strDescriptionPT",
-    "NL": "strDescriptionNL",
-    "RU": "strDescriptionRU",
-    "JP": "strDescriptionJP",
-}
+# Chiave di test pubblica: valida solo per la v1, rifiutata dalla v2 Premium.
+TEST_KEY = "123"
+
+# Suffissi lingua effettivamente presenti nelle risposte di lookup v2.
+# L'inglese e' il campo base senza suffisso (``strBiography`` / ``strDescription``).
+V2_LANG_SUFFIXES: frozenset[str] = frozenset(
+    {"IT", "DE", "ES", "FR", "NL", "RU", "JP", "PT", "CN", "HU", "IL", "NO", "PL", "SE"}
+)
+
+# Campi testo brano (lookup): il primo presente vince.
 TRACK_LYRICS_FIELDS: tuple[str, ...] = (
     "strTrackLyrics",
     "strLyrics",
     "strLyric",
     "strTrackLyric",
 )
+
+
+def _lang_field(prefix: str, language: str) -> str:
+    """Restituisce il nome del campo localizzato v2 per un dato prefisso.
+
+    ``EN`` mappa sul campo base (``strBiography``); le altre lingue usano il
+    suffisso (``strBiographyIT``). Le lingue non disponibili in v2 ricadono sul
+    campo base inglese.
+    """
+    code = (language or "EN").upper()
+    if code == "EN":
+        return prefix
+    if code in V2_LANG_SUFFIXES:
+        return f"{prefix}{code}"
+    return prefix
+
+
+def _localized_text(data: dict[str, Any], prefix: str, language: str = "EN") -> str:
+    """Estrae un testo localizzato (biografia/descrizione) con fallback robusto.
+
+    Ordine: lingua richiesta -> base inglese -> primo campo non vuoto disponibile.
+    """
+    field = _lang_field(prefix, language)
+    text = (data.get(field) or "").strip()
+    if text:
+        return text
+    base = (data.get(prefix) or "").strip()
+    if base:
+        return base
+    for suffix in V2_LANG_SUFFIXES:
+        text = (data.get(f"{prefix}{suffix}") or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _normalize_name(name: str) -> str:
+    """Normalizza un nome artista per il confronto (accenti, case, 'the', punteggiatura)."""
+    text = unicodedata.normalize("NFKD", name or "")
+    text = "".join(ch for ch in text if not unicodedata.combining(ch))
+    text = text.lower().strip()
+    if text.startswith("the "):
+        text = text[4:]
+    text = "".join(ch if ch.isalnum() or ch.isspace() else " " for ch in text)
+    return " ".join(text.split())
 
 
 class AudioDBError(RuntimeError):
@@ -60,58 +105,54 @@ class Artist:
         name: str = "",
         genre: str = "",
         style: str = "",
+        mood: str = "",
         country: str = "",
+        country_code: str = "",
         formed_year: str = "",
         website: str = "",
         thumb_url: str = "",
         fanart_url: str = "",
         logo_url: str = "",
-        biographies: Optional[dict[str, str]] = None,
+        mb_id: str = "",
         raw: Optional[dict[str, Any]] = None,
     ) -> None:
         self.id = id
         self.name = name
         self.genre = genre
         self.style = style
+        self.mood = mood
         self.country = country
+        self.country_code = country_code
         self.formed_year = formed_year
         self.website = website
         self.thumb_url = thumb_url
         self.fanart_url = fanart_url
         self.logo_url = logo_url
-        self.biographies = biographies or {}
+        self.mb_id = mb_id
         self.raw = raw or {}
 
     @classmethod
     def from_api(cls, data: dict[str, Any]) -> "Artist":
-        biographies = {
-            lang: (data.get(api_field) or "").strip()
-            for lang, api_field in BIOGRAPHY_FIELDS.items()
-            if (data.get(api_field) or "").strip()
-        }
         return cls(
             id=data.get("idArtist", "") or "",
             name=data.get("strArtist", "") or "",
             genre=data.get("strGenre", "") or "",
             style=data.get("strStyle", "") or "",
+            mood=data.get("strMood", "") or "",
             country=data.get("strCountry", "") or "",
+            country_code=data.get("strCountryCode", "") or "",
             formed_year=data.get("intFormedYear", "") or "",
             website=data.get("strWebsite", "") or "",
             thumb_url=data.get("strArtistThumb", "") or "",
             fanart_url=data.get("strArtistFanart", "") or "",
             logo_url=data.get("strArtistLogo", "") or "",
-            biographies=biographies,
+            mb_id=data.get("strMusicBrainzID", "") or "",
             raw=data,
         )
 
     def biography(self, language: str = "EN") -> str:
         """Restituisce la biografia nella lingua richiesta, con fallback EN -> qualsiasi."""
-        lang = language.upper()
-        if lang in self.biographies:
-            return self.biographies[lang]
-        if "EN" in self.biographies:
-            return self.biographies["EN"]
-        return next(iter(self.biographies.values()), "")
+        return _localized_text(self.raw, "strBiography", language)
 
     @property
     def image_url(self) -> str:
@@ -119,35 +160,153 @@ class Artist:
 
 
 class AudioDBClient:
-    """Wrapper minimale sulle API REST di TheAudioDB."""
+    """Wrapper sulle API REST v2 (Premium) di TheAudioDB."""
 
     def __init__(self, api_key: Optional[str] = None, timeout: int = 15) -> None:
-        self.api_key = (api_key if api_key is not None else settings.audiodb_api_key) or "123"
+        self.api_key = (api_key if api_key is not None else settings.audiodb_api_key) or ""
         self.timeout = timeout
         self.session = requests.Session()
+        self.session.headers.update({"X-API-KEY": self.api_key})
+        # Cache per-istanza: evita richieste duplicate durante l'arricchimento
+        # di una singola traccia (get_artist viene chiamato da piu' helper).
+        self._cache: dict[str, Any] = {}
 
-    def _request(self, endpoint: str, **params: Any) -> dict[str, Any]:
-        url = f"{API_BASE}/{self.api_key}/{endpoint}"
+    # ------------------------------------------------------------------ #
+    # Trasporto
+    # ------------------------------------------------------------------ #
+    def _request(self, path: str) -> dict[str, Any]:
+        """GET ``{API_BASE}/{path}`` con autenticazione header v2.
+
+        Solleva ``AudioDBError`` per errori di rete o di autenticazione/limite
+        (400/401/403/429), cosi' la UI puo' entrare in modalita' demo. Per
+        404/5xx restituisce ``{}`` (nessun dato) per non interrompere il resto
+        dell'arricchimento.
+        """
+        url = f"{API_BASE}/{path}"
         try:
-            response = self.session.get(url, params=params, timeout=self.timeout)
-            response.raise_for_status()
+            response = self.session.get(url, timeout=self.timeout)
         except requests.RequestException as exc:
             raise AudioDBError(f"Errore di rete TheAudioDB: {exc}") from exc
+
+        if response.status_code in (400, 401, 403, 429):
+            raise AudioDBError(
+                f"TheAudioDB v2 ha rifiutato la richiesta ({response.status_code}): "
+                "verifica la chiave Premium o il limite di richieste."
+            )
+        if response.status_code != 200:
+            return {}
 
         try:
             return response.json() or {}
         except ValueError as exc:
             raise AudioDBError("Risposta TheAudioDB non valida (JSON malformato)") from exc
 
+    def _get_cached(self, path: str) -> dict[str, Any]:
+        if path not in self._cache:
+            self._cache[path] = self._request(path)
+        return self._cache[path]
+
+    @staticmethod
+    def _rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
+        """Estrae la lista di record da una risposta v2 (``search`` o ``lookup``)."""
+        rows = payload.get("search")
+        if rows is None:
+            rows = payload.get("lookup")
+        if not isinstance(rows, list):
+            return []
+        return [r for r in rows if isinstance(r, dict)]
+
+    def _search(self, kind: str, term: str) -> list[dict[str, Any]]:
+        term = (term or "").strip()
+        if not term:
+            return []
+        return self._rows(self._get_cached(f"search/{kind}/{quote(term, safe='')}"))
+
+    def _lookup(self, kind: str, entity_id: str) -> Optional[dict[str, Any]]:
+        entity_id = str(entity_id or "").strip()
+        if not entity_id:
+            return None
+        rows = self._rows(self._get_cached(f"lookup/{kind}/{quote(entity_id, safe='')}"))
+        return rows[0] if rows else None
+
+    @staticmethod
+    def _match_artist(rows: list[dict[str, Any]], artist: str) -> Optional[dict[str, Any]]:
+        """Seleziona il record il cui ``strArtist`` corrisponde all'artista cercato."""
+        if not rows:
+            return None
+        target = _normalize_name(artist)
+        if not target:
+            return rows[0]
+        for row in rows:
+            if _normalize_name(row.get("strArtist", "")) == target:
+                return row
+        for row in rows:
+            cand = _normalize_name(row.get("strArtist", ""))
+            if cand and (cand in target or target in cand):
+                return row
+        return None
+
+    # ------------------------------------------------------------------ #
+    # Entita' (search -> lookup per i dati completi)
+    # ------------------------------------------------------------------ #
     def get_artist(self, name: str) -> Optional[Artist]:
-        """Cerca un artista per nome e restituisce il primo risultato."""
+        """Cerca un artista per nome e restituisce il profilo completo (via lookup).
+
+        Se la ricerca per nome di TheAudioDB non trova nulla (nome scritto in modo
+        diverso, accenti, alias...), ripiega su MusicBrainz per risolvere l'MBID e
+        riprova il lookup di TheAudioDB tramite quell'ID (``/lookup/artist_mb``).
+        """
         if not name or not name.strip():
             return None
-        data = self._request("search.php", s=name.strip())
-        artists = data.get("artists")
-        if not artists:
+        rows = self._search("artist", name)
+        if rows:
+            match = self._match_artist(rows, name) or rows[0]
+            full = self._lookup("artist", match.get("idArtist", "")) or match
+            return Artist.from_api(full)
+        # Fallback: nessun risultato dalla ricerca per nome -> via MusicBrainz.
+        return self._artist_via_musicbrainz(name)
+
+    def get_artist_by_mbid(self, mbid: str) -> Optional[Artist]:
+        """Lookup diretto dell'artista tramite ID MusicBrainz (accesso Premium)."""
+        full = self._lookup("artist_mb", mbid)
+        return Artist.from_api(full) if full else None
+
+    def _artist_via_musicbrainz(self, name: str) -> Optional[Artist]:
+        """Risolve l'MBID con MusicBrainz e rilegge l'artista da TheAudioDB via MBID."""
+        try:
+            from .musicbrainz_client import MusicBrainzClient, MusicBrainzError
+        except ImportError:
             return None
-        return Artist.from_api(artists[0])
+        try:
+            results = MusicBrainzClient(timeout=self.timeout).search_artist(name, limit=1)
+        except MusicBrainzError:
+            return None
+        mbid = results[0].id if results else ""
+        if not mbid:
+            return None
+        return self.get_artist_by_mbid(mbid)
+
+    def search_track(self, artist: str, title: str) -> Optional[dict[str, Any]]:
+        """Cerca i metadati completi di una traccia (filtrando per artista)."""
+        if not artist.strip() or not title.strip():
+            return None
+        rows = self._search("track", title)
+        match = self._match_artist(rows, artist)
+        if not match:
+            return None
+        full = self._lookup("track", match.get("idTrack", "")) or match
+        return full
+
+    def search_album(self, artist: str, album: str) -> Optional[dict[str, Any]]:
+        """Cerca i metadati completi di un album (filtrando per artista)."""
+        if not artist.strip() or not album.strip():
+            return None
+        rows = self._search("album", album)
+        match = self._match_artist(rows, artist)
+        if not match:
+            return None
+        full = self._lookup("album", match.get("idAlbum", "")) or match
+        return full
 
     def get_biography(self, artist: Union[str, Artist, None], language: str = "EN") -> str:
         """Restituisce la biografia (accetta nome o oggetto Artist)."""
@@ -165,43 +324,12 @@ class AudioDBClient:
             return ""
         return artist.image_url
 
-    def search_track(self, artist: str, title: str) -> Optional[dict[str, Any]]:
-        """Cerca metadati TheAudioDB per una traccia."""
-        if not artist.strip() or not title.strip():
-            return None
-        data = self._request("searchtrack.php", s=artist.strip(), t=title.strip())
-        tracks = data.get("track")
-        if not tracks:
-            return None
-        first = tracks[0]
-        return first if isinstance(first, dict) else None
-
-    def search_album(self, artist: str, album: str) -> Optional[dict[str, Any]]:
-        """Cerca metadati TheAudioDB per un album."""
-        if not artist.strip() or not album.strip():
-            return None
-        data = self._request("searchalbum.php", s=artist.strip(), a=album.strip())
-        albums = data.get("album")
-        if not albums:
-            return None
-        first = albums[0]
-        return first if isinstance(first, dict) else None
-
+    # ------------------------------------------------------------------ #
+    # Helper testo/contesto (invariati nell'interfaccia, adattati ai campi v2)
+    # ------------------------------------------------------------------ #
     @staticmethod
     def _localized_description(data: dict[str, Any], language: str = "EN") -> str:
-        lang = language.upper()
-        field = DESCRIPTION_FIELDS.get(lang, "strDescriptionEN")
-        text = (data.get(field) or "").strip()
-        if text:
-            return text
-        text = (data.get("strDescriptionEN") or "").strip()
-        if text:
-            return text
-        for api_field in DESCRIPTION_FIELDS.values():
-            text = (data.get(api_field) or "").strip()
-            if text:
-                return text
-        return ""
+        return _localized_text(data, "strDescription", language)
 
     @staticmethod
     def _first_present(data: dict[str, Any], fields: tuple[str, ...]) -> str:

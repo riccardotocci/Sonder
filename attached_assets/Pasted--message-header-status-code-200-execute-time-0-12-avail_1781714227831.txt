@@ -1,0 +1,86 @@
+{
+  "message": {
+    "header": {
+      "status_code": 200,
+      "execute_time": 0.12,
+      "available": 1500
+    },
+    "body": {
+      "track_list": [
+        {
+          "track": {
+            "track_id": 12345678,
+            "track_name": "Bohemian Rhapsody",
+            "artist_name": "Queen",
+            "album_name": "A Night at the Opera",
+            "commontrack_id": 7654321,
+            "first_release_date": "1975-10-31T00:00:00Z",
+            "track_share_url": "https://www.musixmatch.com/lyrics/Queen/Bohemian-Rhapsody"
+          },
+          "analysis": {
+            "meaning": {
+              "explanation": "A song about a young man confessing to murder and facing the consequences of his actions.",
+              "description": "Generates a simple, short explanation of the lyrics' content."
+            },
+            "themes": {
+              "main_themes": [
+                {
+                  "theme": "guilt and redemption",
+                  "quotes": [
+                    "Mama, just killed a man",
+                    "Is this the real life? Is this just fantasy?"
+                  ]
+                }
+              ],
+              "description": "Extracts a list of the main themes covered by the song's lyrics."
+            },
+            "moods": {
+              "main_moods": [
+                "Angst",
+                "Despair"
+              ],
+              "description": "Extracts a list of moods from the lyrics."
+            },
+            "rating": {
+              "audience": "PG-13",
+              "descriptor": "Thematic elements of violence and death",
+              "description": "Assigns a parental guide rating to the lyrics."
+            },
+            "religion": {
+              "has_references": false,
+              "referenced_religions": [],
+              "description": "Identifies references to religions within the lyrics."
+            },
+            "entities": {
+              "entity_list": [
+                {
+                  "entity_name": "Galileo",
+                  "categories": [
+                    "People & Groups"
+                  ],
+                  "occurrences": 4
+                }
+              ],
+              "description": "Identifies and categorizes specific elements like names, locations, dates."
+            },
+            "moderation": {
+              "needs_moderation": false,
+              "categories": [
+                {
+                  "category": "violence",
+                  "score": 0.15,
+                  "is_present": false
+                }
+              ],
+              "description": "Identifies content categories that may require moderation."
+            },
+            "explicitness": {
+              "has_profanities": false,
+              "description": "Examines a text to find offensive or inappropriate words."
+            }
+          }
+        }
+      ]
+    }
+  }
+}

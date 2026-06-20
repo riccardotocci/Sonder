@@ -1,4 +1,4 @@
-# ===== Empathy for the Devil - dipendenze =====
+# ===== Sonder - dipendenze =====
 # Interfaccia web
 streamlit>=1.40.0
 
@@ -19,3 +19,11 @@ langdetect>=1.0.9
 
 # SDK ufficiale ElevenLabs (Text-to-Speech + timestamp per i sottotitoli karaoke)
 elevenlabs>=2.0.0
+
+# Tabelle/statistiche (grafici Songstats)
+pandas>=2.0.0
+fastapi
+uvicorn[standard]
+fastapi
+pydantic
+uvicorn[standard]

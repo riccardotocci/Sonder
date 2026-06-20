@@ -1,4 +1,4 @@
-# 💕 SONDER
+# SONDER
 
 > Piattaforma di **curatela musicale, analisi letteraria e storytelling emotivo multilingua** — Musicathon 2026.
 
@@ -62,7 +62,7 @@ lo stesso filo conduttore narrativo (l'ombra, la redenzione, il conflitto umano)
 ## 📁 Struttura del progetto
 
 ```
-empathy-for-the-devil/
+sonder/
 ├── app.py                   # Entry point Streamlit
 ├── core/
 │   ├── __init__.py

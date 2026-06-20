@@ -7,13 +7,14 @@ MusicBrainz richiede uno User-Agent identificativo. E' gratuito e open.
 """
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
 import requests
 
 API_BASE = "https://musicbrainz.org/ws/2"
-USER_AGENT = "EmpathyForTheDevil/0.1.0 (hackathon@example.com)"
+USER_AGENT = "Sonder/0.1.0 (hackathon@example.com)"
 
 
 class MusicBrainzError(RuntimeError):
@@ -29,6 +30,10 @@ class MBArtist:
     sort_name: str = ""
     type: str = ""  # Person, Group, Orchestra, etc.
     country: str = ""
+    # Area = zona geografica associata (può essere paese o regione); begin_area =
+    # luogo di nascita/formazione, di solito la CITTÀ d'origine dell'artista.
+    area: str = ""
+    begin_area: str = ""
     disambiguation: str = ""
     # Relazioni utili
     wikidata_id: Optional[str] = None  # Per biografie tramite Wikidata
@@ -37,6 +42,18 @@ class MBArtist:
     discogs_id: Optional[str] = None
     allmusic_id: Optional[str] = None
     raw: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def city(self) -> str:
+        """Città d'origine dell'artista.
+
+        Usa SOLO ``begin_area`` (il luogo di nascita/formazione, che in
+        MusicBrainz è la città/paese in senso "town"). ``area`` viene
+        deliberatamente ignorata perché di norma contiene il NOME della nazione
+        (es. "United Kingdom"), mentre ``country`` è l'ISO2 (es. "GB"): usarla
+        spaccerebbe un paese per città.
+        """
+        return (self.begin_area or "").strip()
 
     @classmethod
     def from_api(cls, data: dict[str, Any]) -> "MBArtist":
@@ -64,12 +81,16 @@ class MBArtist:
             elif rel_type == "allmusic":
                 allmusic_id = target.split("/")[-1] if target else None
         
+        area = data.get("area") or {}
+        begin_area = data.get("begin-area") or data.get("begin_area") or {}
         return cls(
             id=data.get("id", ""),
             name=data.get("name", ""),
             sort_name=data.get("sort-name", ""),
             type=data.get("type", ""),
             country=data.get("country", ""),
+            area=(area.get("name") or "") if isinstance(area, dict) else "",
+            begin_area=(begin_area.get("name") or "") if isinstance(begin_area, dict) else "",
             disambiguation=data.get("disambiguation", ""),
             wikidata_id=wikidata_id,
             wikipedia_url=wikipedia_url,
@@ -92,13 +113,33 @@ class MusicBrainzClient:
         })
 
     def _request(self, endpoint: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Esegue richiesta GET all'endpoint MusicBrainz."""
+        """Esegue richiesta GET all'endpoint MusicBrainz.
+
+        MusicBrainz anonimo limita a ~1 req/s e risponde 503 quando il limite
+        viene superato: in quel caso si attende e si riprova una volta, così la
+        ricerca della città resta affidabile anche con più brani in parallelo.
+        """
         url = f"{API_BASE}/{endpoint}"
         query_params = params.copy() if params else {}
         query_params["fmt"] = "json"
-        
+
+        response = None
+        for attempt in range(2):
+            try:
+                response = self.session.get(url, params=query_params, timeout=self.timeout)
+            except requests.RequestException as exc:
+                raise MusicBrainzError(f"Errore di rete MusicBrainz: {exc}") from exc
+            if response.status_code == 503 and attempt == 0:
+                retry_after = response.headers.get("Retry-After")
+                try:
+                    delay = float(retry_after) if retry_after else 1.1
+                except ValueError:
+                    delay = 1.1
+                time.sleep(min(delay, 3.0))
+                continue
+            break
+
         try:
-            response = self.session.get(url, params=query_params, timeout=self.timeout)
             response.raise_for_status()
         except requests.RequestException as exc:
             raise MusicBrainzError(f"Errore di rete MusicBrainz: {exc}") from exc

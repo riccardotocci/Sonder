@@ -119,17 +119,43 @@ class MusixmatchClient:
     # ------------------------------------------------------------------ #
     # Low-level
     # ------------------------------------------------------------------ #
-    def _request(self, endpoint: str, **params: Any) -> dict[str, Any]:
+    def _require_key(self) -> str:
         if not self.api_key:
             raise MusixmatchError(
                 "Chiave API Musixmatch mancante. Imposta MUSIXMATCH_API_KEY o MXM_KEY nel file .env"
             )
+        return self.api_key
 
-        params["apikey"] = self.api_key
+    def _request(self, endpoint: str, **params: Any) -> dict[str, Any]:
+        params = dict(params)
+        params["apikey"] = self._require_key()
         url = f"{API_BASE}/{endpoint}"
-
         try:
             response = self.session.get(url, params=params, timeout=self.timeout)
+        except requests.RequestException as exc:
+            raise MusixmatchError(f"Errore di rete Musixmatch: {exc}") from exc
+        return self._unwrap(response)
+
+    def _post(self, endpoint: str, data: dict[str, Any], **params: Any) -> dict[str, Any]:
+        """POST con corpo JSON (es. ``track.lyrics.analysis.search``)."""
+        params = dict(params)
+        params["apikey"] = self._require_key()
+        url = f"{API_BASE}/{endpoint}"
+        try:
+            response = self.session.post(
+                url,
+                params=params,
+                json=data,
+                headers={"Content-Type": "application/json"},
+                timeout=self.timeout,
+            )
+        except requests.RequestException as exc:
+            raise MusixmatchError(f"Errore di rete Musixmatch: {exc}") from exc
+        return self._unwrap(response)
+
+    @staticmethod
+    def _unwrap(response: requests.Response) -> dict[str, Any]:
+        try:
             response.raise_for_status()
         except requests.RequestException as exc:
             raise MusixmatchError(f"Errore di rete Musixmatch: {exc}") from exc
@@ -186,6 +212,76 @@ class MusixmatchClient:
         body = self._request("track.search", **params)
         track_list = body.get("track_list", []) or []
         return [Track.from_api(item["track"]) for item in track_list if item.get("track")]
+
+    def search_lyrics_analysis(
+        self, meaning: str, *, limit: int = 20
+    ) -> list[tuple["Track", dict[str, Any]]]:
+        """Ricerca semantica per "significato" dei testi.
+
+        Usa l'endpoint POST ``track.lyrics.analysis.search`` con corpo
+        ``{"data": {"meaning": "..."}}``. Ogni traccia restituita porta con se'
+        l'analisi dei testi (mood, temi, rating, ...) e i generi primari, quindi
+        non serve un secondo round-trip per arricchirla. Ritorna una lista di
+        coppie ``(Track, analysis)``; lista vuota se non ci sono risultati.
+        """
+        meaning = (meaning or "").strip()
+        if not meaning:
+            return []
+        body = self._post(
+            "track.lyrics.analysis.search", {"data": {"meaning": meaning}}
+        )
+        track_list = body.get("track_list", []) or []
+        out: list[tuple[Track, dict[str, Any]]] = []
+        for item in track_list:
+            track_data = item.get("track") if isinstance(item, dict) else None
+            if not track_data:
+                continue
+            analysis = item.get("analysis") if isinstance(item, dict) else {}
+            out.append((Track.from_api(track_data), analysis or {}))
+            if len(out) >= max(1, limit):
+                break
+        return out
+
+    def get_lyrics_analysis(self, track_id: int) -> dict[str, Any]:
+        """Analisi testuale di una traccia (``track.lyrics.analysis.get``).
+
+        Richiede il ``track_id`` reale (NON il commontrack_id). Ritorna il dict
+        ``analysis`` (mood, temi, rating, ...) oppure ``{}`` se l'analisi non e'
+        disponibile o l'endpoint non e' accessibile per il piano corrente
+        (degrada con grazia: i chiamanti trattano il vuoto come "nessun mood").
+        """
+        if not track_id:
+            return {}
+        try:
+            body = self._request("track.lyrics.analysis.get", track_id=track_id)
+        except MusixmatchError:
+            return {}
+        analysis = body.get("analysis")
+        return analysis if isinstance(analysis, dict) else {}
+
+    @staticmethod
+    def analysis_moods(analysis: dict[str, Any]) -> list[str]:
+        """Estrae i mood testuali (``moods.main_moods``) da un dict di analisi."""
+        moods = ((analysis or {}).get("moods") or {}).get("main_moods") or []
+        if not isinstance(moods, list):
+            return []
+        return [str(m).strip() for m in moods if str(m).strip()]
+
+    @staticmethod
+    def analysis_themes(analysis: dict[str, Any]) -> list[str]:
+        """Estrae i temi (``themes.main_themes[].theme``) da un dict di analisi."""
+        themes = ((analysis or {}).get("themes") or {}).get("main_themes") or []
+        if not isinstance(themes, list):
+            return []
+        out: list[str] = []
+        for item in themes:
+            if isinstance(item, dict):
+                name = str(item.get("theme") or "").strip()
+            else:
+                name = str(item or "").strip()
+            if name:
+                out.append(name)
+        return out
 
     def get_lyrics(self, track_id: int) -> Lyrics:
         """Recupera il testo a partire dall'ID traccia."""
