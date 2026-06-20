@@ -182,6 +182,10 @@ function TrackDetails({ tracks }) {
             key={i}
             style={{ borderTop: `4px solid ${color}` }}
           >
+            {/* Copertina SOLO da Musixmatch (t.cover): l'album coverart reale del
+                brano. Non usiamo t.image perche' l'enrichment lo sovrascrive con la
+                foto artista di TheAudioDB (o con stringa vuota quando l'artista esiste
+                ma non ha immagine), facendo sparire la copertina. */}
             <div
               style={{
                 width: "100%",
@@ -190,13 +194,13 @@ function TrackDetails({ tracks }) {
                 marginBottom: 8,
                 overflow: "hidden",
                 border: "1px solid rgba(255,255,255,.08)",
-                background: t.image ? "transparent" : "rgba(255,255,255,.04)",
+                background: t.cover ? "transparent" : "rgba(255,255,255,.04)",
                 flexShrink: 0,
               }}
             >
-              {t.image && (
+              {t.cover && (
                 <img
-                  src={t.image}
+                  src={t.cover}
                   alt=""
                   style={{
                     width: "100%",
