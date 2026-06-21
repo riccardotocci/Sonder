@@ -700,6 +700,24 @@ details.expander summary {
     font-family: 'Inter', sans-serif; color: #8f8aa8;
     font-size: .85rem; line-height: 1.55; margin: 1rem 0 0; max-width: 760px;
 }
+.about-soon {
+    display: flex; align-items: flex-start; gap: .6rem;
+    margin: 1rem 0 0; max-width: 760px;
+    padding: .7rem .9rem; border-radius: 12px;
+    background: rgba(255,255,255,.04);
+    border: 1px solid rgba(255,255,255,.10);
+    font-family: 'Inter', sans-serif; color: #b8b3cc;
+    font-size: .85rem; line-height: 1.55;
+}
+.about-soon-tag {
+    flex-shrink: 0; margin-top: .05rem;
+    font-family: 'Space Grotesk', sans-serif; font-weight: 600;
+    font-size: .68rem; letter-spacing: .06em; text-transform: uppercase;
+    color: #ffd479;
+    background: rgba(255,184,0,.10);
+    border: 1px solid rgba(255,184,0,.28);
+    padding: .12rem .55rem; border-radius: 999px; white-space: nowrap;
+}
 
 /* About: author footer */
 .about-author {
