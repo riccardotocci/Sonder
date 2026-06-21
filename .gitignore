@@ -18,6 +18,16 @@ venv/
 env/
 ENV/
 
+# ===== Node / Frontend (Vite) =====
+node_modules/
+frontend/dist/
+.vite/
+*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
 # ===== Streamlit =====
 .streamlit/secrets.toml
 
