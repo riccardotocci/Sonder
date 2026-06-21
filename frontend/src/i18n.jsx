@@ -38,8 +38,7 @@ const STRINGS = {
     llmModelLabel: "LLM model",
     servicesHeading: "Services",
     narrationNote: "🌍 Narration & translations: {lang}",
-    heroSub:
-      "Search for a theme, a topic or a message you'd like to explore through music.",
+    heroSub: "Different songs, same story",
     inputPlaceholder: "Describe a mood, a moment, an artist…",
     send: "Send",
     searchLangsLabel: "Choose the language you'd like to explore in",
@@ -194,8 +193,7 @@ const STRINGS = {
     llmModelLabel: "Modello LLM",
     servicesHeading: "Servizi",
     narrationNote: "🌍 Narrazione e traduzioni: {lang}",
-    heroSub:
-      "Cerca un tema, un argomento o un messaggio che vorresti esplorare nella musica.",
+    heroSub: "Canzoni diverse, stessa storia",
     inputPlaceholder: "Descrivi un'atmosfera, un momento, un artista…",
     send: "Invia",
     searchLangsLabel: "Scegli la lingua in cui vorresti esplorare",
@@ -347,8 +345,7 @@ const STRINGS = {
     llmModelLabel: "Modèle LLM",
     servicesHeading: "Services",
     narrationNote: "🌍 Narration et traductions : {lang}",
-    heroSub:
-      "Cherchez un thème, un sujet ou un message que vous aimeriez explorer en musique.",
+    heroSub: "Des chansons différentes, la même histoire",
     inputPlaceholder: "Décrivez une ambiance, un moment, un artiste…",
     send: "Envoyer",
     searchLangsLabel: "Choisissez la langue dans laquelle vous voulez explorer",
@@ -497,8 +494,7 @@ const STRINGS = {
     llmModelLabel: "Modelo LLM",
     servicesHeading: "Servicios",
     narrationNote: "🌍 Narración y traducciones: {lang}",
-    heroSub:
-      "Busca un tema, un asunto o un mensaje que te gustaría explorar en la música.",
+    heroSub: "Canciones diferentes, la misma historia",
     inputPlaceholder: "Describe una atmósfera, un momento, un artista…",
     send: "Enviar",
     searchLangsLabel: "Elige el idioma en el que quieres explorar",
@@ -647,8 +643,7 @@ const STRINGS = {
     llmModelLabel: "LLM-Modell",
     servicesHeading: "Dienste",
     narrationNote: "🌍 Erzählung & Übersetzungen: {lang}",
-    heroSub:
-      "Suche ein Thema, einen Gedanken oder eine Botschaft, die du in der Musik erkunden möchtest.",
+    heroSub: "Verschiedene Songs, dieselbe Geschichte",
     inputPlaceholder: "Beschreibe eine Stimmung, einen Moment, einen Künstler…",
     send: "Senden",
     searchLangsLabel: "Wähle die Sprache, in der du erkunden möchtest",
@@ -778,8 +773,7 @@ const STRINGS = {
     llmModelLabel: "Modelo LLM",
     servicesHeading: "Serviços",
     narrationNote: "🌍 Narração e traduções: {lang}",
-    heroSub:
-      "Procura um tema, um assunto ou uma mensagem que gostarias de explorar na música.",
+    heroSub: "Canções diferentes, a mesma história",
     inputPlaceholder: "Descreve uma atmosfera, um momento, um artista…",
     send: "Enviar",
     searchLangsLabel: "Escolhe o idioma em que queres explorar",
@@ -907,8 +901,7 @@ const STRINGS = {
     llmModelLabel: "LLM モデル",
     servicesHeading: "サービス",
     narrationNote: "🌍 ナレーションと翻訳：{lang}",
-    heroSub:
-      "音楽で探求したいテーマ、トピック、メッセージを探しましょう。",
+    heroSub: "違う歌、同じ物語",
     inputPlaceholder: "雰囲気、瞬間、アーティストを入力…",
     send: "送信",
     searchLangsLabel: "探求したい言語を選びましょう",
@@ -1036,8 +1029,7 @@ const STRINGS = {
     llmModelLabel: "LLM 모델",
     servicesHeading: "서비스",
     narrationNote: "🌍 내레이션 및 번역: {lang}",
-    heroSub:
-      "음악으로 탐구하고 싶은 주제, 화제 또는 메시지를 찾아보세요.",
+    heroSub: "다른 노래, 같은 이야기",
     inputPlaceholder: "분위기, 순간, 아티스트를 설명하세요…",
     send: "보내기",
     searchLangsLabel: "탐색하고 싶은 언어를 선택하세요",
@@ -1162,8 +1154,7 @@ const STRINGS = {
     llmModelLabel: "LLM 模型",
     servicesHeading: "服务",
     narrationNote: "🌍 旁白与翻译：{lang}",
-    heroSub:
-      "寻找你想通过音乐探索的主题、话题或讯息。",
+    heroSub: "不同的歌，同样的故事",
     inputPlaceholder: "描述一种氛围、一个瞬间、一位艺人…",
     send: "发送",
     searchLangsLabel: "选择你想探索的语言",

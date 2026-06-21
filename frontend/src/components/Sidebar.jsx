@@ -28,7 +28,6 @@ export default function Sidebar({
 }) {
   const { t } = useT();
   const [stayLoggedIn, setStayLoggedIn] = useState(true);
-  const [modelOpen, setModelOpen] = useState(false);
   const sp = boot.spotify;
 
   const handleLogin = async () => {
@@ -104,29 +103,8 @@ export default function Sidebar({
         )}
       </div>
 
-      <hr />
-
-      <details
-        className="expander"
-        open={modelOpen}
-        onToggle={(e) => setModelOpen(e.target.open)}
-      >
-        <summary>🧠 {t("thinkingModelHeading")}</summary>
-        <div style={{ marginTop: ".6rem" }}>
-          <label className="field-label">{t("llmModelLabel")}</label>
-          <select
-            className="text-input"
-            value={llmModel}
-            onChange={(e) => setLlmModel(e.target.value)}
-          >
-            {boot.llm_models.map((m) => (
-              <option key={m.value} value={m.value}>
-                {m.label}
-              </option>
-            ))}
-          </select>
-        </div>
-      </details>
+      {/* Selettore del modello "Thinking" nascosto su richiesta:
+          il valore resta gestito dal default lato App/back-end. */}
 
       <hr />
 
