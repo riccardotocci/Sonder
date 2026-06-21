@@ -1,7 +1,55 @@
+modules = ["python-3.12", "nodejs-20"]
+[agent]
+expertMode = true
+stack = "BEST_EFFORT_FALLBACK"
+
+[nix]
+channel = "stable-25_05"
+packages = ["glibcLocales", "libxcrypt"]
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Start application"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Backend API"
+
+[[workflows.workflow]]
+name = "Start application"
+author = "agent"
+
+[workflows.workflow.metadata]
+outputType = "webview"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd frontend && npm run dev"
+waitForPort = 5000
+
+[[workflows.workflow]]
+name = "Backend API"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "uvicorn backend.main:app --host 0.0.0.0 --port 8000"
+waitForPort = 8000
+
+[workflows.workflow.metadata]
+outputType = "console"
+
 [[ports]]
 localPort = 5000
 externalPort = 80
-exposeLocalhost = true
 
 [[ports]]
 localPort = 5001
@@ -15,5 +63,20 @@ externalPort = 3002
 localPort = 8000
 externalPort = 8000
 
-[agent]
-expertMode = true
+[deployment]
+deploymentTarget = "cloudrun"
+run = ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "5000"]
+build = ["sh", "-c", "cd frontend && npm install && npm run build"]
+
+[userenv]
+
+[userenv.shared]
+LLM_BASE_URL = "https://openrouter.ai/api/v1"
+LLM_MODEL = "openai/gpt-oss-120b"
+ELEVENLABS_VOICE_ID = "JBFqnCBsd6RMkjVDRZzb"
+SPOTIFY_REDIRECT_URI = "https://sonder-music.replit.app"
+LLM_TIMEOUT_SECONDS = "60"
+
+[postMerge]
+path = "scripts/post-merge.sh"
+timeoutMs = 180000
