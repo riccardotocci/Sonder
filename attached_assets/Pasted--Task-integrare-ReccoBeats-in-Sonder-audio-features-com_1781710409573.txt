@@ -1,0 +1,96 @@
+# Task: integrare ReccoBeats in Sonder (audio features come sostituto delle ex Spotify audio features)
+
+## Contesto
+ReccoBeats (https://api.reccobeats.com) è un'API **gratuita, senza API key né auth**,
+che fornisce le audio features (danceability, energy, valence, tempo, key, mode,
+loudness, acousticness, instrumentalness, liveness, speechiness) che Spotify ha
+deprecato. Va usata per arricchire ogni traccia risolta in Sonder.
+
+IMPORTANTE — l'endpoint audio-features NON accetta l'ID Spotify direttamente:
+serve un flusso a 2 step.
+  1. GET /v1/track?ids={spotify_id|isrc}   -> ritorna { "content": [ { "id": <recco_id>, ... } ] }
+  2. GET /v1/track/{recco_id}/audio-features -> ritorna le features
+
+`/v1/track?ids=...` accetta fino a 40 id (Spotify ID, ReccoBeats ID o ISRC),
+ripetendo il parametro `ids`. In Sonder l'ISRC è già risolto (vedi
+`backend/pipeline.py::_resolve_isrc`), quindi usa l'ISRC come `ids`.
+
+## Vincoli di progetto (NON violarli — vedi AGENTS.md)
+- Graceful degradation obbligatoria: l'app deve funzionare anche se ReccoBeats è
+  irraggiungibile. Qualsiasi errore di rete/parsing -> ritorna None/[] (modalità demo),
+  MAI sollevare eccezioni verso la pipeline.
+- Commenti e docstring in ITALIANO (le stringhe UI restano in inglese).
+- Stesso "shape" degli altri client: una classe `ReccoBeatsClient` + eccezione
+  custom `ReccoBeatsError` (come `SongstatsClient`/`SongstatsError`).
+- Le funzioni della pipeline devono restare PURE e thread-safe (girano in
+  ThreadPoolExecutor): nessuno stato Streamlit, nessuna mutazione in-place degli input.
+- Export LAZY in core/__init__.py: niente lavoro all'import.
+
+## File DA CREARE: core/reccobeats_client.py
+Modella sul pattern di `core/songstats_client.py`. Deve esporre:
+- `API_BASE = "https://api.reccobeats.com/v1"`
+- `class ReccoBeatsError(RuntimeError)`
+- `@dataclass AudioFeatures` con i campi float/int delle features + `raw: dict`,
+  più una proprietà `is_empty`.
+- `class ReccoBeatsClient`:
+    - `__init__(self, timeout: int = 15)` con `requests.Session()`.
+    - `ready` -> sempre True (nessuna key richiesta).
+    - `_get(self, path, **params) -> dict` difensivo (gestisce network error,
+      status != 200, JSON malformato -> solleva ReccoBeatsError internamente).
+    - `resolve_id(self, spotify_or_isrc: str) -> str | None`:
+        chiama `/track?ids=...`, ritorna `content[0]["id"]` o None.
+    - `audio_features_by_recco_id(self, recco_id: str) -> AudioFeatures | None`.
+    - `audio_features(self, spotify_id: str = "", isrc: str = "") -> AudioFeatures | None`:
+        orchestratore: risolve l'id (preferendo isrc) e poi le features.
+        Tutti gli errori catturati -> ritorna None.
+
+Aggiungi anche un'inferenza "mood" leggera derivata dalle features (es. mappa
+valence+energy -> etichetta tipo "euforico / malinconico / calmo / teso"), come
+proprietà o metodo dell'AudioFeatures, perché serve allo Storyteller.
+
+## File DA MODIFICARE
+
+1) core/__init__.py
+   Aggiungi alle mappe `_EXPORTS` e `__all__`:
+     "ReccoBeatsClient": (".reccobeats_client", "ReccoBeatsClient"),
+     "ReccoBeatsError": (".reccobeats_client", "ReccoBeatsError"),
+     "AudioFeatures":   (".reccobeats_client", "AudioFeatures"),
+
+2) backend/pipeline.py
+   - Importa ReccoBeatsClient dall'header dei core import (insieme a SongstatsClient).
+   - Aggiungi una funzione cache-ata e pura, accanto a `_songstats_track_stats`:
+       @functools.lru_cache(maxsize=512)
+       def _reccobeats_features(title: str, artist: str, user_token: str = "") -> dict | None
+     che:
+       - riusa `_resolve_isrc(title, artist, user_token)` per ottenere l'ISRC,
+       - chiama `ReccoBeatsClient().audio_features(isrc=isrc)`,
+       - ritorna un dict serializzabile (features + mood) o None.
+   - Aggancia il risultato in `build_studio` al dict della traccia (chiave
+     "audio_features"), SENZA mutare gli input originali (clona come già fa il resto
+     di build_studio). Verifica come build_studio inietta gli altri campi per traccia.
+
+3) backend/main.py
+   - Aggiungi un endpoint POST /api/audio-features speculare a /api/songstats:
+       class AudioFeaturesRequest(BaseModel):
+           tracks: list[dict[str, Any]] = []
+           spotify_token: str = ""
+     che, in parallelo con ThreadPoolExecutor (come fa /api/songstats), chiama
+     `pipeline._reccobeats_features(t["title"], t["artist"], user_token)` per ogni
+     traccia e ritorna { "available": True, "rows": [...] }.
+   - ReccoBeats non ha key, quindi non aggiungere flag a settings.status(); è sempre
+     "available".
+
+## Validazione (NESSUN test suite / linter nel repo)
+- `python -c "from core.reccobeats_client import ReccoBeatsClient; \
+   print(ReccoBeatsClient().audio_features(isrc='USCJY1231021'))"`
+  (ISRC d'esempio "All Too Well" di Taylor Swift dalla doc) deve stampare delle features.
+- Avvia il backend: `uvicorn backend.main:app --port 8000` e verifica che
+  `/api/bootstrap` risponda e che `/api/audio-features` con un body di prova
+  ritorni rows non vuote.
+- `python -c "import backend.pipeline, backend.main"` per confermare zero import error.
+
+## Criteri di accettazione
+- App si avvia con ZERO API key e ReccoBeats funziona comunque (non richiede key).
+- Se ReccoBeats è offline, la traccia non ha "audio_features" ma tutto il resto
+  della pipeline continua a funzionare.
+- Nessuna eccezione propagata dalla pipeline; docstring/commenti in italiano.

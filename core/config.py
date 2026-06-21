@@ -4,6 +4,7 @@ Tutte le credenziali vengono lette dal file ``.env`` (vedi ``.env.example``).
 Nessuna chiave e' hard-coded: se mancano, i client lo segnalano in modo esplicito
 e l'interfaccia entra in "modalita' demo".
 """
+
 from __future__ import annotations
 
 import os
@@ -15,7 +16,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-DEFAULT_LLM_MODEL = "openai/gpt-oss-120b:free"
+DEFAULT_LLM_MODEL = "openai/gpt-oss-120b"
 
 # Soglia di notorieta' minima (task 4): le tracce con un numero di stream/ascolti
 # Songstats inferiore a questo valore vengono escluse dai risultati. Spotify
@@ -35,6 +36,26 @@ SEARCH_LANGUAGE_OPTIONS: tuple[tuple[str, str], ...] = (
     ("日本語", "JA"),
     ("한국어", "KO"),
     ("中文", "ZH"),
+    ("हिन्दी", "HI"),
+    ("Nederlands", "NL"),
+    ("Dansk", "DA"),
+    ("Hrvatski", "HR"),
+    ("Ελληνικά", "EL"),
+    ("Norsk", "NO"),
+    ("Русский", "RU"),
+    ("Українська", "UK"),
+    ("العربية", "AR"),
+    ("Svenska", "SV"),
+    ("Polski", "PL"),
+    ("Türkçe", "TR"),
+    ("Čeština", "CS"),
+    ("Română", "RO"),
+    ("Magyar", "HU"),
+    ("עברית", "HE"),
+    ("Suomi", "FI"),
+    ("Bahasa Indonesia", "ID"),
+    ("Tiếng Việt", "VI"),
+    ("ไทย", "TH"),
 )
 
 LLM_MODEL_OPTIONS: tuple[tuple[str, str], ...] = (
@@ -70,6 +91,14 @@ def _env_float(key: str, default: float) -> float:
         return default
 
 
+def _env_bool(key: str, default: bool) -> bool:
+    """Legge un flag booleano da ambiente; valori vuoti restituiscono il default."""
+    raw = _env(key, "")
+    if not raw:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
 @dataclass(frozen=True)
 class Settings:
     """Snapshot immutabile della configurazione dell'applicazione."""
@@ -78,22 +107,39 @@ class Settings:
     musixmatch_api_key: str = field(
         default_factory=lambda: _env("MUSIXMATCH_API_KEY") or _env("MXM_KEY")
     )
-
-    # --- TheAudioDB ("123" = chiave di test pubblica gratuita v1) ---
-    audiodb_api_key: str = field(default_factory=lambda: _env("AUDIODB_API_KEY", "123"))
-
-    # --- Last.fm API (biografie + statistiche ascolto) ---
-    # Ottieni la chiave su https://www.last.fm/api/account/create
-    lastfm_api_key: str = field(default_factory=lambda: _env("LASTFM_API_KEY"))
+    # Sorgenti di ricerca Musixmatch attivabili in modo indipendente: le query
+    # basate sui TESTI (lyrics) e/o la ricerca per SIGNIFICATO (meaning). Possono
+    # stare insieme o da sole. Default: solo lyrics attivo; il meaning e' OFF
+    # perche' da solo tende a restituire sempre gli stessi brani popolari.
+    # Non influenzano il piano dell'LLM ne' il check successivo sui candidati.
+    musixmatch_use_lyrics: bool = field(
+        default_factory=lambda: _env_bool("MUSIXMATCH_USE_LYRICS", True)
+    )
+    musixmatch_use_meaning: bool = field(
+        default_factory=lambda: _env_bool("MUSIXMATCH_USE_MEANING", False)
+    )
+    # Lyric Fingerprint (track.lyrics.fingerprint.post, prodotto "Sentinel"): usa il
+    # TESTO per verificare/recuperare l'identita' canonica del brano (Spotify ID/
+    # ISRC/genere/cover) quando la ricerca per titolo/artista e' incerta. Restituisce
+    # gli stessi campi di track.get. ON di default: richiede un piano Enterprise, ma
+    # su piani inferiori l'endpoint risponde 403 e la chiamata degrada in silenzio
+    # (nessun effetto), quindi e' sicuro lasciarlo attivo. Disattivabile con
+    # MUSIXMATCH_USE_FINGERPRINT=false.
+    musixmatch_use_fingerprint: bool = field(
+        default_factory=lambda: _env_bool("MUSIXMATCH_USE_FINGERPRINT", True)
+    )
+    # --- TheAudioDB (v2 Premium: la chiave va nell'header X-API-KEY) ---
+    # La chiave di test "123" funziona solo con la vecchia v1 e viene rifiutata
+    # dalla v2, quindi non viene piu' usata come default: senza chiave Premium la
+    # sezione entra in modalita' demo.
+    audiodb_api_key: str = field(default_factory=lambda: _env("AUDIODB_API_KEY"))
 
     # --- Motore LLM (OpenRouter / OpenAI / DeepSeek) ---
     llm_api_key: str = field(default_factory=lambda: _env("LLM_API_KEY"))
     llm_base_url: str = field(
         default_factory=lambda: _env("LLM_BASE_URL", "https://openrouter.ai/api/v1")
     )
-    llm_model: str = field(
-        default_factory=lambda: _env("LLM_MODEL", DEFAULT_LLM_MODEL)
-    )
+    llm_model: str = field(default_factory=lambda: _env("LLM_MODEL", DEFAULT_LLM_MODEL))
     llm_timeout_seconds: float = field(
         default_factory=lambda: _env_float("LLM_TIMEOUT_SECONDS", 20.0)
     )
@@ -135,11 +181,8 @@ class Settings:
 
     @property
     def audiodb_ready(self) -> bool:
-        return bool(self.audiodb_api_key)
-
-    @property
-    def lastfm_ready(self) -> bool:
-        return bool(self.lastfm_api_key)
+        # La v2 e' Premium: la vecchia chiave di test "123" non e' valida.
+        return bool(self.audiodb_api_key) and self.audiodb_api_key != "123"
 
     @property
     def llm_ready(self) -> bool:
@@ -167,7 +210,6 @@ class Settings:
         return {
             "Musixmatch": self.musixmatch_ready,
             "TheAudioDB": self.audiodb_ready,
-            "Last.fm": self.lastfm_ready,
             "LLM (Thinking)": self.llm_ready,
             "ElevenLabs TTS": self.elevenlabs_ready,
             "Spotify": self.spotify_pkce_ready,

@@ -1,0 +1,141 @@
+{
+  "message": {
+    "body": {
+      "music_genre_list": [
+        {
+          "music_genre": {
+            "music_genre_id": 34,
+            "music_genre_name": "Music",
+            "music_genre_name_extended": "Music",
+            "music_genre_parent_id": 0,
+            "music_genre_vanity": "Music"
+          }
+        },
+        {
+          "music_genre": {
+            "music_genre_id": 1007,
+            "music_genre_name": "Chicago Blues",
+            "music_genre_name_extended": "Blues / Chicago Blues",
+            "music_genre_parent_id": 2,
+            "music_genre_vanity": "Blues-Chicago-Blues"
+          }
+        },
+        {
+          "music_genre": {
+            "music_genre_id": 1009,
+            "music_genre_name": "Classic Blues",
+            "music_genre_name_extended": "Blues / Classic Blues",
+            "music_genre_parent_id": 2,
+            "music_genre_vanity": "Blues-Classic-Blues"
+          }
+        },
+        {
+          "music_genre": {
+            "music_genre_id": 1010,
+            "music_genre_name": "Contemporary Blues",
+            "music_genre_name_extended": "Blues / Contemporary Blues",
+            "music_genre_parent_id": 2,
+            "music_genre_vanity": "Blues-Contemporary-Blues"
+          }
+        },
+        {
+          "music_genre": {
+            "music_genre_id": 1011,
+            "music_genre_name": "Country Blues",
+            "music_genre_name_extended": "Blues / Country Blues",
+            "music_genre_parent_id": 2,
+            "music_genre_vanity": "Blues-Country-Blues"
+          }
+        },
+        {
+          "music_genre": {
+            "music_genre_id": 1012,
+            "music_genre_name": "Delta Blues",
+            "music_genre_name_extended": "Blues / Delta Blues",
+            "music_genre_parent_id": 2,
+            "music_genre_vanity": "Blues-Delta-Blues"
+          }
+        },
+        {
+          "music_genre": {
+            "music_genre_id": 1013,
+            "music_genre_name": "Electric Blues",
+            "music_genre_name_extended": "Blues / Electric Blues",
+            "music_genre_parent_id": 2,
+            "music_genre_vanity": "Blues-Electric-Blues"
+          }
+        },
+        {
+          "music_genre": {
+            "music_genre_id": 1210,
+            "music_genre_name": "Acoustic Blues",
+            "music_genre_name_extended": "Blues / Acoustic Blues",
+            "music_genre_parent_id": 2,
+            "music_genre_vanity": "Blues-Acoustic-Blues"
+          }
+        },
+        {
+          "music_genre": {
+            "music_genre_id": 1167,
+            "music_genre_name": "Novelty",
+            "music_genre_name_extended": "Comedy / Novelty",
+            "music_genre_parent_id": 3,
+            "music_genre_vanity": "Comedy-Novelty"
+          }
+        },
+        {
+          "music_genre": {
+            "music_genre_id": 1171,
+            "music_genre_name": "Standup Comedy",
+            "music_genre_name_extended": "Comedy / Standup Comedy",
+            "music_genre_parent_id": 3,
+            "music_genre_vanity": "Comedy-Standup-Comedy"
+          }
+        },
+        {
+          "music_genre": {
+            "music_genre_id": 1014,
+            "music_genre_name": "Lullabies",
+            "music_genre_name_extended": "Children's Music / Lullabies",
+            "music_genre_parent_id": 4,
+            "music_genre_vanity": "Children's-Music-Lullabies"
+          }
+        },
+        {
+          "music_genre": {
+            "music_genre_id": 1015,
+            "music_genre_name": "Sing-Along",
+            "music_genre_name_extended": "Children's Music / Sing-Along",
+            "music_genre_parent_id": 4,
+            "music_genre_vanity": "Children's-Music-Sing-Along"
+          }
+        },
+        {
+          "music_genre": {
+            "music_genre_id": 1016,
+            "music_genre_name": "Stories",
+            "music_genre_name_extended": "Children's Music / Stories",
+            "music_genre_parent_id": 4,
+            "music_genre_vanity": "Children's-Music-Stories"
+          }
+        },
+        {
+          "music_genre": {
+            "music_genre_id": 1017,
+            "music_genre_name": "Avant-Garde",
+            "music_genre_name_extended": "Classical / Avant-Garde",
+            "music_genre_parent_id": 5,
+            "music_genre_vanity": "Classical-Avant-Garde"
+          }
+        },
+        {
+          "music_genre": "(...)"
+        }
+      ]
+    },
+    "header": {
+      "execute_time": 0.064568996429443,
+      "status_code": 200
+    }
+  }
+}

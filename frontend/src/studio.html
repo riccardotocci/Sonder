@@ -1,0 +1,1107 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@400;600&display=swap');
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body { font-family: 'Inter', 'Segoe UI', sans-serif; color: #e8e6f5; background: transparent; }
+
+  ::-webkit-scrollbar { width: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(249,115,22,.35); border-radius: 8px; }
+
+  .bar {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 12px;
+  }
+  .bar button {
+    font-family: 'Space Grotesk', sans-serif; font-weight: 700;
+    border: 0; border-radius: 12px; padding: 9px 18px; cursor: pointer;
+    color: #fff; background: linear-gradient(100deg, #ff2d78, #f97316);
+    box-shadow: 0 0 18px rgba(255,45,120,.35); font-size: .95rem;
+    transition: transform .15s ease, filter .15s ease, box-shadow .15s ease;
+  }
+  .bar button:hover { transform: translateY(-1px); filter: brightness(1.08); box-shadow: 0 0 26px rgba(249,115,22,.5); }
+  .bar button.ghost {
+    background: rgba(249,115,22,.10); color: #ffd9b0; border: 1px solid rgba(249,115,22,.4);
+    box-shadow: none;
+  }
+  .bar button.ghost.on {
+    background: linear-gradient(100deg, #22d3ee, #c2410c); color: #fff; border: 0;
+    box-shadow: 0 0 18px rgba(34,211,238,.4);
+  }
+  #status { margin-left: auto; font-family: 'JetBrains Mono', monospace; color: #8f8aa8; font-size: .8rem; }
+
+  .cols {
+    display: grid; grid-template-columns: 0.95fr 1.55fr 1.05fr; gap: 16px;
+    height: 720px;
+  }
+  .col {
+    background: linear-gradient(165deg, rgba(255,255,255,.05), rgba(255,255,255,.02));
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 16px; padding: 14px; overflow-y: auto;
+    overscroll-behavior: contain;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+    backdrop-filter: blur(10px);
+  }
+  .col-h {
+    font-family: 'JetBrains Mono', monospace; font-weight: 600;
+    margin-bottom: 10px; color: #22d3ee;
+    text-transform: uppercase; letter-spacing: .22em; font-size: .68rem;
+    border-bottom: 1px solid rgba(255,255,255,.08); padding-bottom: 8px;
+  }
+
+  .ti {
+    display: flex; align-items: center; gap: 10px; padding: 9px 10px;
+    border-radius: 12px; margin-bottom: 8px; cursor: pointer;
+    border: 1px solid rgba(255,255,255,0.06); background: rgba(255,255,255,.03);
+    transition: transform .12s ease, box-shadow .12s ease, border-color .12s ease;
+  }
+  .ti:hover { transform: translateY(-1px); border-color: rgba(249,115,22,.4); box-shadow: 0 8px 18px rgba(249,115,22,.15); }
+  .ti.active {
+    background: rgba(249,115,22,.12); border-color: rgba(249,115,22,.55);
+    box-shadow: 0 0 18px rgba(249,115,22,.25);
+  }
+  .ti-play {
+    flex: 0 0 auto; width: 30px; height: 30px; border-radius: 50%; border: 0;
+    cursor: pointer; color: #fff; font-size: .8rem; line-height: 30px;
+    box-shadow: 0 0 10px rgba(0,0,0,.4);
+  }
+  .ti-body { overflow: hidden; }
+  .ti-title {
+    font-family: 'Space Grotesk', sans-serif; font-weight: 600; color: #f3f1ff;
+    font-size: .92rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .ti-artist { color: #8f8aa8; font-size: .8rem; }
+  .ti-open {
+    flex: 0 0 auto; margin-left: auto; color: #1db954; text-decoration: none;
+    font-size: 1rem; font-weight: 700; padding: 2px 7px; border-radius: 8px;
+    opacity: .7; transition: opacity .12s ease, background .12s ease;
+  }
+  .ti-open:hover { opacity: 1; background: rgba(29,185,84,.14); }
+
+  #center-empty {
+    height: 100%; display: flex; align-items: center; justify-content: center;
+    text-align: center; color: #8f8aa8; font-size: 1.05rem; padding: 0 24px;
+  }
+  #c-img {
+    width: 100%; max-height: 230px; object-fit: cover; border-radius: 14px;
+    margin-bottom: 14px; box-shadow: 0 10px 26px rgba(0,0,0,.45);
+    border: 1px solid rgba(255,255,255,.08);
+  }
+  #c-title {
+    font-family: 'Space Grotesk', sans-serif; font-weight: 700;
+    font-size: 1.7rem; line-height: 1.1; margin-bottom: 4px;
+    background: linear-gradient(95deg, #ff2d78, #f97316 60%, #22d3ee); -webkit-background-clip: text;
+    background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  #c-meta { color: #8f8aa8; font-family: 'JetBrains Mono', monospace; font-size: .8rem; margin-bottom: 14px; }
+  #c-speech { font-size: 1.05rem; line-height: 1.75; color: #c9c5dd; }
+
+  #player { text-align: center; }
+  #p-msg { color: #8f8aa8; font-size: .78rem; margin-top: 10px; }
+  #sp-embed {
+    width: 100%; height: 152px; border: 0; border-radius: 12px; margin-top: 12px;
+    background: rgba(255,255,255,.04);
+  }
+  #p-open {
+    display: none; margin-top: 8px; color: #1db954; font-size: .82rem;
+    text-decoration: none; font-weight: 600;
+  }
+  #need-login { color: #8f8aa8; font-size: .9rem; padding: 12px 4px; }
+
+  /* ---- Player column + Lyrics panel ---- */
+  #player-col { display: flex; flex-direction: column; overflow: hidden; }
+  #lyrics-section { margin-top: 14px; display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
+  #lyrics-box {
+    flex: 1 1 auto; min-height: 160px; overflow-y: auto; padding: 10px 14px;
+    background: rgba(255,255,255,.03); border-radius: 12px;
+    border: 1px solid rgba(255,255,255,.08); scroll-behavior: smooth;
+    overscroll-behavior: contain;
+  }
+  .lyr-empty { color: #6f6a85; font-size: .82rem; font-style: italic; padding: 6px; }
+  .lyr-line {
+    font-size: .86rem; line-height: 1.55; color: #8f8aa8;
+    padding: 7px 8px; border-radius: 8px; margin-bottom: 4px;
+    transition: color .35s ease, background .35s ease;
+  }
+  .lyr-line.active { color: #f3f1ff; font-weight: 600; background: rgba(249,115,22,.12); }
+  .lyr-translated { color: #f3f1ff; font-size: .92rem; line-height: 1.45; }
+  .lyr-original { color: #8f8aa8; font-size: .72rem; line-height: 1.35; margin-top: 2px; opacity: .82; }
+  /* Nessuna traduzione disponibile: l'originale e' l'unica riga -> reso leggibile. */
+  .lyr-line .lyr-original:only-child { color: #c9c5dd; font-size: .92rem; line-height: 1.5; margin-top: 0; opacity: 1; }
+  .lyr-line.active .lyr-original { color: #b6b0ca; }
+  .lyr-word.active { color: #facc15; text-shadow: 0 0 10px rgba(250,204,21,.35); }
+  /* Karaoke della narrazione: ogni parola si illumina quando ElevenLabs la pronuncia. */
+  .sp-word { transition: color .18s ease, text-shadow .18s ease; }
+  .sp-word.active { color: #facc15; font-weight: 600; text-shadow: 0 0 12px rgba(250,204,21,.45); }
+  /* Fase 2: barra di caricamento del testo narrato (ancora in generazione). */
+  .narr-loading { margin-top: 4px; }
+  .narr-loading-label { color: #c9c5dd; font-size: .92rem; margin-bottom: 12px; opacity: .9; }
+  .narr-bar { position: relative; height: 6px; border-radius: 999px; background: rgba(255,255,255,.08); overflow: hidden; }
+  .narr-bar-fill { position: absolute; top: 0; left: -40%; height: 100%; width: 40%; border-radius: 999px;
+    background: linear-gradient(90deg, #ff2d78, #f97316); animation: narr-slide 1.2s ease-in-out infinite; }
+  @keyframes narr-slide { 0% { left: -40%; } 100% { left: 100%; } }
+  /* Comando narrazione disabilitato mentre il testo si genera. */
+  #narrationToggle:disabled { opacity: .45; cursor: progress; }
+</style>
+</head>
+<body>
+  <div class="bar">
+    <button id="playAll">&#9654; <span id="lbl-play">Play</span></button>
+    <button id="shuffle" class="ghost">&#128256; <span id="lbl-shuffle">Shuffle</span></button>
+    <button id="narrationToggle" class="ghost" aria-pressed="false">&#128263; <span id="lbl-narration">Narration: off</span></button>
+    <span id="status">Ready</span>
+  </div>
+  <div class="cols">
+    <div class="col">
+      <div class="col-h" id="lbl-tracks-found">Tracks found</div>
+      <div id="list"></div>
+    </div>
+    <div class="col">
+      <div id="center-empty">Press &#9654; Play, or choose a track on the left.<br>Click on the title to read the speech without voice.</div>
+      <div id="center-content" style="display:none">
+        <img id="c-img"/>
+        <div id="c-title"></div>
+        <div id="c-meta"></div>
+        <div id="c-speech"></div>
+      </div>
+    </div>
+    <div class="col" id="player-col">
+      <div class="col-h" id="lbl-player">Player</div>
+      <div id="need-login" style="display:none">Log in to your Spotify in the sidebar to enable the player and playback.</div>
+      <div id="player" style="display:none">
+        <div id="p-msg">Starting player&hellip;</div>
+                <div id="sp-embed"></div>
+        <a id="p-open" target="_blank" rel="noopener">Open this track on Spotify</a>
+      </div>
+      <div id="lyrics-section" style="display:none;">
+        <div class="col-h" id="lbl-lyrics" style="margin-top:12px;">Lyrics</div>
+        <div id="lyrics-box"></div>
+      </div>
+    </div>
+  </div>
+
+<script>
+  const TRACKS = __TRACKS__;
+  const TTSLANG = __TTSLANG__;
+  const TOKEN = __TOKEN__;
+  const PLAYLIST_NAME = __PLAYLIST__;
+    const STUDIO_ID = __STUDIO_ID__;
+  // Task 1: endpoint TTS locale per generare la narrazione ElevenLabs ON-DEMAND,
+  // un clip alla volta. Vuoto => fallback alla Web Speech API del browser.
+  const TTS_ENDPOINT = __TTS_ENDPOINT__;
+  const TTS_TOKEN = __TTS_TOKEN__;
+    // Task 4: modalità di consegna audio ('local' = endpoint loopback, 'embedded' =
+    // generazione server-side via rerun in hosting, 'off' = Web Speech) e stato del
+    // brano preparato quando si rientra dopo aver generato l'audio embedded.
+  const TTS_MODE = __TTS_MODE__;
+  const AUTOPLAY = __AUTOPLAY__;
+  const I18N = __I18N__;
+  // Fase 2: il testo narrato e' ancora in generazione -> barra di caricamento e
+  // comandi di narrazione disabilitati finche' non arriva via postMessage.
+  let narrationPending = __NARRATION_PENDING__;
+
+  // Localize the static chrome of the Studio from the injected I18N strings.
+  (function applyI18n() {
+    const set = (id, val) => {
+      const el = document.getElementById(id);
+      if (el && val) el.textContent = val;
+    };
+    set("lbl-play", I18N.playLabel);
+    set("lbl-shuffle", I18N.shuffleLabel);
+    set("status", I18N.ready);
+    set("lbl-tracks-found", I18N.tracksFound);
+    set("lbl-player", I18N.player);
+    set("lbl-lyrics", I18N.lyrics);
+    set("p-msg", I18N.startingPlayer);
+    set("p-open", I18N.openTrackSpotify);
+    const ce = document.getElementById("center-empty");
+    if (ce && I18N.centerEmpty) ce.innerHTML = I18N.centerEmpty;
+    const nl = document.getElementById("need-login");
+    if (nl && I18N.needLoginPlayer) nl.textContent = I18N.needLoginPlayer;
+  })();
+  // Task 2: tolleranza (secondi) per l'allineamento del richsync (anticipo highlight).
+  const LYRIC_OFFSET = 0.18;
+  const PALETTE = ["#ff2d78","#f97316","#22d3ee","#facc15","#c2410c","#34d399"];
+
+    let embedController = null;
+    let pendingUri = '';
+    let embedReady = false;
+    let embedPlayed = false;
+    let embedPosition = 0;
+    let embedDuration = 0;
+    let embedPaused = true;
+    let lastPlaybackUpdateTs = Date.now();
+    // Watchdog: timer che verifica se il player ufficiale Spotify e' effettivamente
+    // partito dopo un play(). Se non parte (tipico quando l'Embed e' rate-limited e
+    // mostra il proprio messaggio cross-origin, illeggibile da qui) trattiamo il
+    // caso come "Spotify non disponibile" attivando lo stesso flusso del 429.
+    let playbackWatchTimer = null;
+    function clearPlaybackWatch() {
+        if (playbackWatchTimer) { clearTimeout(playbackWatchTimer); playbackWatchTimer = null; }
+    }
+  let currentAudio = null;
+  let speechRaf = null;
+  let speechActiveIdx = -1;
+  let shuffleOn = false;
+  // Narrazione spenta di default: con Play parte solo Spotify in ordine; attivandola
+  // si riproduce narrazione + Spotify in sequenza.
+  let narrationOn = false;
+  let autoSeq = false;
+  let awaitingEnd = false;
+  let order = [];
+  let seqPos = 0;
+  let current = -1;
+  // Indice del brano attualmente in riproduzione (-1 = fermo): governa lo stato
+  // dei tasti Play/Stop.
+  let playingIdx = -1;
+
+  const statusEl = document.getElementById('status');
+  const listEl = document.getElementById('list');
+  const emptyEl = document.getElementById('center-empty');
+  const contentEl = document.getElementById('center-content');
+  const cImg = document.getElementById('c-img');
+  const cTitle = document.getElementById('c-title');
+  const cMeta = document.getElementById('c-meta');
+  const cSpeech = document.getElementById('c-speech');
+  const pMsg = document.getElementById('p-msg');
+
+  function setStatus(s) { statusEl.textContent = s; }
+  function setPMsg(s) { pMsg.textContent = s; }
+
+  // ---- Stato dei controlli (Play <-> Stop) ----
+  // Il tasto Play generale e i tasti per-brano diventano Stop quando il relativo
+  // brano e' in riproduzione; ripremendoli si ferma tutto.
+  function updateControls() {
+    const playing = playingIdx >= 0;
+    const pa = document.getElementById('playAll');
+    if (pa) {
+      pa.classList.toggle('on', playing);
+      const lbl = playing ? (I18N.stopLabel || 'Stop') : (I18N.playLabel || 'Play');
+      pa.innerHTML = (playing ? '\u23F9 ' : '\u25B6 ') +
+        '<span id="lbl-play">' + esc(lbl) + '</span>';
+    }
+    document.querySelectorAll('.ti').forEach(el => {
+      const i = parseInt(el.dataset.i);
+      const btn = el.querySelector('.ti-play');
+      if (btn) btn.innerHTML = (i === playingIdx) ? '&#9209;' : '&#9654;';
+    });
+  }
+
+  function setPlaying(idx) {
+    playingIdx = idx;
+    updateControls();
+  }
+
+  function stopAll() {
+    autoSeq = false;
+    awaitingEnd = false;
+    seqPos = 0;
+    stopAudio();
+    setPlaying(-1);
+    setStatus(I18N.ready);
+  }
+
+  // ---- Toggle narrazione (spento di default) ----
+  const narrationBtn = document.getElementById('narrationToggle');
+  function updateNarrationBtn() {
+    if (!narrationBtn) return;
+    // Fase 2: finche' il testo narrato si genera, la narrazione e' disabilitata
+    // (si possono comunque scegliere e lanciare i brani su Spotify).
+    if (narrationPending) {
+      narrationOn = false;
+      narrationBtn.disabled = true;
+      narrationBtn.classList.remove('on');
+      narrationBtn.setAttribute('aria-pressed', 'false');
+      narrationBtn.innerHTML = '\uD83D\uDD07 <span id="lbl-narration">' +
+        esc(I18N.narrationOff || 'Narration: off') + '</span>';
+      return;
+    }
+    narrationBtn.disabled = false;
+    const label = narrationOn ? (I18N.narrationOn || 'Narration: on')
+                              : (I18N.narrationOff || 'Narration: off');
+    narrationBtn.classList.toggle('on', narrationOn);
+    narrationBtn.setAttribute('aria-pressed', narrationOn ? 'true' : 'false');
+    narrationBtn.innerHTML = (narrationOn ? '\uD83D\uDDE3\uFE0F ' : '\uD83D\uDD07 ') +
+      '<span id="lbl-narration">' + esc(label) + '</span>';
+  }
+  if (narrationBtn) {
+    narrationBtn.addEventListener('click', () => {
+      if (narrationPending) return;
+      narrationOn = !narrationOn;
+      updateNarrationBtn();
+    });
+  }
+
+  function esc(s) {
+    const d = document.createElement('div'); d.textContent = s || ''; return d.innerHTML;
+  }
+
+  function spotifyTrackId(uri) {
+    const m = String(uri || '').match(/spotify:track:([A-Za-z0-9]+)/);
+    return m ? m[1] : '';
+  }
+
+  function trackSpotifyLink(t) {
+    const id = spotifyTrackId(t.uri);
+    if (id) return 'https://open.spotify.com/track/' + id;
+    // Senza URI diretto usiamo l'ISRC (identifica il brano in modo univoco): la
+    // ricerca "isrc:..." su Spotify porta al brano esatto, non a una lista per
+    // titolo/artista. Solo se manca l'ISRC ricadiamo sulla ricerca testuale.
+    const isrc = String(t.isrc || '').trim();
+    if (isrc) return 'https://open.spotify.com/search/' + encodeURIComponent('isrc:' + isrc);
+    return 'https://open.spotify.com/search/' + encodeURIComponent(((t.title || '') + ' ' + (t.artist || '')).trim());
+  }
+
+  function showSpotifyEmbed(uri) {
+    const id = spotifyTrackId(uri);
+    if (!id) return;
+    const open = document.getElementById('p-open');
+        const trackUri = 'spotify:track:' + id;
+        pendingUri = trackUri;
+        if (embedController && embedReady) {
+            embedController.loadUri(trackUri);
+        }
+    open.href = 'https://open.spotify.com/track/' + id;
+    open.style.display = 'inline-block';
+  }
+
+  async function prepareTrackPlayer(i) {
+    const t = TRACKS[i];
+        if (t.uri) {
+            showSpotifyEmbed(t.uri);
+            setPMsg(embedReady ? '' : I18N.loadingPlayer);
+            return;
+        }
+        if (!TOKEN) {
+            setPMsg(I18N.uriUnavailable);
+            return;
+        }
+        const uri = await resolveUri(t);
+        if (current !== i) return;
+        if (uri) {
+            showSpotifyEmbed(uri);
+            setPMsg(embedReady ? '' : I18N.loadingPlayer);
+        } else {
+            setPMsg(I18N.trackNotFound);
+        }
+  }
+
+  // ---- Lista brani ----
+  TRACKS.forEach((t, i) => {
+    const color = PALETTE[i % PALETTE.length];
+    const row = document.createElement('div');
+    row.className = 'ti'; row.dataset.i = i;
+    row.innerHTML =
+      '<button class="ti-play" style="background:' + color + '">&#9654;</button>' +
+      '<div class="ti-body">' +
+        '<div class="ti-title">' + (i+1) + '. ' + esc(t.title) + '</div>' +
+        '<div class="ti-artist">' + esc(t.artist) + (t.mood ? ' &middot; ' + esc(t.mood) : '') + '</div>' +
+      '</div>' +
+      '<a class="ti-open" href="' + trackSpotifyLink(t) + '" target="_blank" rel="noopener" title="' + esc(I18N.openOnSpotify) + '">&#8599;</a>';
+    row.querySelector('.ti-play').addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (i === playingIdx) { stopAll(); return; }
+      autoSeq = false; seqPos = 0; order = [i];
+      runTrack(i, false);
+    });
+    row.querySelector('.ti-body').addEventListener('click', () => {
+      stopAll();
+      current = i; highlight(i); showCenter(i);
+    });
+    row.querySelector('.ti-open').addEventListener('click', (e) => { e.stopPropagation(); });
+    listEl.appendChild(row);
+  });
+
+  function highlight(i) {
+    document.querySelectorAll('.ti').forEach(el => {
+      el.classList.toggle('active', parseInt(el.dataset.i) === i);
+    });
+  }
+
+  // Fase 2: barra di caricamento mostrata al posto del testo narrato mancante.
+  function narrationLoadingHtml() {
+    return '<div class="narr-loading">' +
+      '<div class="narr-loading-label">' + esc(I18N.generatingNarration || 'Generating narration…') + '</div>' +
+      '<div class="narr-bar"><div class="narr-bar-fill"></div></div>' +
+    '</div>';
+  }
+
+  // Disegna SOLO il blocco del testo narrato per un brano. Estratto da showCenter
+  // cosi' l'arrivo della narrazione (fase 2) puo' aggiornare il testo senza
+  // ridisegnare l'intero centro (e senza toccare il player Spotify in corso).
+  function renderSpeechBlock(t) {
+    const musix = (t.musixmatch_speech || '').trim();
+    const adb = (t.audiodb_speech || '').trim();
+    const hasSpeech = !!((t.speech || '').trim()) || !!musix || !!adb;
+    clearSpeechKaraoke();
+    // Narrazione ancora in generazione e nessun testo disponibile -> barra.
+    if (narrationPending && !hasSpeech) {
+      cSpeech.innerHTML = narrationLoadingHtml();
+      return;
+    }
+    if (renderSpeechWords(t)) {
+      // narrazione con parole-span pronte per il karaoke (evidenziate al Play)
+    } else if (musix || adb) {
+      cSpeech.innerHTML =
+        (musix ? '<div>' + esc(musix) + '</div>' : '') +
+        (adb ? '<div style="margin-top:12px;">' + esc(adb) + '</div>' : '');
+    } else {
+      cSpeech.textContent = t.speech || (t.reason || I18N.noSpeech);
+    }
+  }
+
+  function showCenter(i) {
+    const t = TRACKS[i];
+    emptyEl.style.display = 'none';
+    contentEl.style.display = 'block';
+    if (t.image) { cImg.src = t.image; cImg.style.display = 'block'; }
+    else { cImg.style.display = 'none'; }
+    cTitle.textContent = t.title;
+    const bits = [t.artist];
+    if (t.origin) bits.push('📍 ' + t.origin);
+    if (t.mood) bits.push(t.mood);
+    if (t.album) bits.push(t.album);
+    if (t.duration) {
+      const mm = Math.floor(t.duration / 60), ss = t.duration % 60;
+      bits.push(mm + ':' + String(ss).padStart(2, '0'));
+    }
+    cMeta.textContent = bits.filter(Boolean).join('  ·  ');
+    renderSpeechBlock(t);
+    showLyrics(i);
+    prepareTrackPlayer(i);
+  }
+
+  // ---- Lyrics ----
+  function richsyncLineText(item) {
+    const line = item && (item.l || item.line || item.text || '');
+    if (Array.isArray(line)) {
+      return line.map(token => {
+        if (token && typeof token === 'object') return token.c || token.text || '';
+        return String(token || '');
+      }).join('').trim();
+    }
+    return String(line || '').trim();
+  }
+
+  function cleanLyricLines(text) {
+    return String(text || '').split('\n')
+      .map(l => l.trim())
+      .filter(l => l && !l.startsWith('****') && !l.toLowerCase().includes('commercial use'));
+  }
+
+  // Task 2: nessun player di testi sincronizzati ufficiale è esposto dalle API
+  // pubbliche (lo Spotify Embed riproduce il brano ufficiale ma NON fornisce i
+  // testi sincronizzati; Musixmatch non offre un player embeddabile pubblico).
+  // Quindi NON si finge la sincronia: si usa il richsync Musixmatch SOLO se i
+  // suoi tempi sono affidabili, altrimenti si ripiega su testo riga-per-riga.
+  function richsyncTimingOk(richsync) {
+    let prev = -1, valid = 0, monotonic = true, maxTs = 0;
+    for (const item of richsync) {
+      const rawTs = (item && (item.ts != null ? item.ts : item.start));
+      const ts = Number(rawTs);
+      if (rawTs == null || !Number.isFinite(ts)) continue;
+      valid++;
+      if (ts + 0.001 < prev) monotonic = false;
+      prev = ts;
+      if (ts > maxTs) maxTs = ts;
+    }
+    // Servono abbastanza righe temporizzate, in ordine, su un arco > 1s.
+    return valid >= 4 && monotonic && maxTs > 1;
+  }
+
+  function showLyrics(i) {
+    const t = TRACKS[i];
+    const section = document.getElementById('lyrics-section');
+    const box = document.getElementById('lyrics-box');
+    section.style.display = 'flex';
+    const richsync = Array.isArray(t.richsync) ? t.richsync : [];
+    const translatedLines = cleanLyricLines(t.translated_lyrics);
+
+    // 1) Solo con Spotify collegato e richsync affidabile -> sincronia parola/riga.
+    //    Senza player Spotify la sincronia non ha senso: si ripiega sul testo completo.
+    if (TOKEN && richsync.length && richsyncTimingOk(richsync)) {
+      box.innerHTML = richsync.map((item, idx) => {
+        const originalText = richsyncLineText(item);
+        if (!originalText) return '';
+        // Nello slot principale va SOLO la traduzione nella lingua della UI: mai
+        // il testo originale del brano (che resta nella riga secondaria).
+        const translatedText = translatedLines[idx] || '';
+        const start = Number(item.ts != null ? item.ts : (item.start || 0));
+        const end = Number(item.te != null ? item.te : (item.end || 0));
+        const line = item.l || item.line || item.text || '';
+        let originalHtml = esc(originalText);
+        if (Array.isArray(line)) {
+          originalHtml = line.map((token, wordIdx) => {
+            const raw = token && typeof token === 'object' ? (token.c || token.text || '') : String(token || '');
+            const offset = token && typeof token === 'object' ? Number(token.o || token.offset || 0) : 0;
+            return '<span class="lyr-word" data-offset="' + offset + '" data-word="' + wordIdx + '">' + esc(raw) + '</span>';
+          }).join('');
+        }
+        return '<div class="lyr-line" data-idx="' + idx + '" data-start="' + start + '" data-end="' + end + '">' +
+          (translatedText ? '<div class="lyr-translated">' + esc(translatedText) + '</div>' : '') +
+          '<div class="lyr-original">' + originalHtml + '</div>' +
+        '</div>';
+      }).join('');
+      return;
+    }
+
+    // 2) Fallback testo completo: testo originale + traduzione, SENZA sincronia.
+    //    Vale per la versione senza Spotify e quando il richsync manca o è
+    //    inaffidabile anche con Spotify collegato. Si preferisce il testo semplice
+    //    completo (t.lyrics); se assente si ricavano le righe dal richsync.
+    const originalLines = (t.lyrics && t.lyrics.trim())
+      ? cleanLyricLines(t.lyrics)
+      : richsync.map(it => richsyncLineText(it)).filter(Boolean);
+    if (originalLines.length) {
+      box.innerHTML = originalLines.map((l, idx) =>
+        '<div class="lyr-line" data-idx="' + idx + '">' +
+          (translatedLines[idx] ? '<div class="lyr-translated">' + esc(translatedLines[idx]) + '</div>' : '') +
+          '<div class="lyr-original">' + esc(l) + '</div>' +
+        '</div>'
+      ).join('');
+      return;
+    }
+
+    // 3) Nessun testo disponibile per questo brano.
+    box.innerHTML = '<div class="lyr-empty">' + esc(I18N.syncedUnavailable) + '</div>';
+  }
+
+  function syncLyrics(position, duration) {
+    const box = document.getElementById('lyrics-box');
+    const lines = box.querySelectorAll('.lyr-line');
+    if (!lines.length || !duration) return;
+    const pos = position > 1000 ? position / 1000 : position;
+    const dur = duration > 1000 ? duration / 1000 : duration;
+    // Anticipa leggermente l'highlight per compensare la latenza del playback_update.
+    const adj = pos + LYRIC_OFFSET;
+    let idx = -1;
+    let latestTimedIdx = -1;
+    let hasTimedLines = false;
+    lines.forEach((el, i) => {
+      const start = Number(el.dataset.start);
+      const end = Number(el.dataset.end);
+      const hasStart = el.dataset.start !== undefined && el.dataset.start !== '' && !Number.isNaN(start);
+      const hasEnd = el.dataset.end !== undefined && !Number.isNaN(end) && end > start;
+      if (hasStart) {
+        hasTimedLines = true;
+        if (adj >= start) latestTimedIdx = i;
+        // Finestra con tolleranza per assorbire piccoli disallineamenti del richsync.
+        if (adj >= start && (!hasEnd || adj <= end + LYRIC_OFFSET)) idx = i;
+      }
+    });
+    if (idx < 0 && latestTimedIdx >= 0) idx = latestTimedIdx;
+    if (idx < 0 && !hasTimedLines) idx = Math.min(Math.floor((pos / dur) * lines.length), lines.length - 1);
+    if (idx < 0) return;
+    let changed = false;
+    lines.forEach((el, i) => {
+      const was = el.classList.contains('active');
+      el.classList.toggle('active', i === idx);
+      if (i === idx) {
+        const start = Number(el.dataset.start) || 0;
+        el.querySelectorAll('.lyr-word').forEach(word => {
+          const offset = Number(word.dataset.offset || 0);
+          word.classList.toggle('active', adj >= start + offset);
+        });
+      } else {
+        el.querySelectorAll('.lyr-word').forEach(word => word.classList.remove('active'));
+      }
+      if (!was && i === idx) changed = true;
+    });
+    // Task 1: scrolla SOLO la finestra del testo (non l'intera pagina/iframe).
+    // scrollIntoView risalirebbe agli antenati scrollabili: usiamo box.scrollTo
+    // calcolando la posizione centrata della riga attiva dentro #lyrics-box.
+    if (changed && lines[idx]) {
+      const target = lines[idx];
+      const targetTop = target.offsetTop - box.offsetTop;
+      const centeredTop = targetTop - (box.clientHeight / 2) + (target.clientHeight / 2);
+      box.scrollTo({ top: Math.max(0, centeredTop), behavior: 'smooth' });
+    }
+  }
+
+  // ---- Spotify Web API helpers (token personale dell'utente) ----
+  // Rate limit di Spotify (429): l'app ha esaurito il quota di richieste. In quel
+  // caso mostriamo "SPOTIFY al momento non disponibile" e chiediamo al parent di
+  // disconnettere l'utente (logout); la riconnessione resta manuale dalla sidebar.
+  let spotifyRateLimited = false;
+  function handleSpotifyRateLimit() {
+    if (spotifyRateLimited) return;
+    spotifyRateLimited = true;
+    try { setStatus(I18N.spotifyUnavailable); } catch (e) {}
+    try { setPMsg(I18N.spotifyUnavailable); } catch (e) {}
+    try {
+      if (window.parent) {
+        window.parent.postMessage({ type: 'sonder-spotify-rate-limit' }, '*');
+      }
+    } catch (e) {}
+  }
+
+  function api(path, opts) {
+    return fetch('https://api.spotify.com/v1' + path, Object.assign({
+      headers: { 'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'application/json' }
+    }, opts || {})).then((r) => {
+      if (r && r.status === 429) handleSpotifyRateLimit();
+      return r;
+    });
+  }
+
+  function normalizeMeta(s) {
+    return String(s || '')
+      .toLowerCase()
+      .replace(/[\(\[].*?[\)\]]/g, ' ')
+      .replace(/\s-\s.*$/, ' ')
+      .replace(/\b(feat|ft|featuring|with)\b.*$/, ' ')
+      .replace(/[^\w\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function scoreCandidate(it, title, artist) {
+    const wantT = normalizeMeta(title);
+    const wantA = normalizeMeta(artist);
+    const candT = normalizeMeta(it.name);
+    const candA = normalizeMeta((it.artists || []).map(a => a.name).join(' '));
+    let s = 0;
+    if (wantT && wantT === candT) s += 0.6;
+    else if (wantT && (candT.indexOf(wantT) >= 0 || wantT.indexOf(candT) >= 0)) s += 0.4;
+    if (wantA) {
+      if (wantA === candA) s += 0.4;
+      else if (candA.indexOf(wantA) >= 0 || wantA.indexOf(candA) >= 0) s += 0.25;
+    } else { s += 0.2; }
+    s += Math.min(it.popularity || 0, 100) / 1000.0;
+    return s;
+  }
+
+  // Task 4: risolve l'URI Spotify usando i metadati canonici (titolo/artista corretti
+  // da Musixmatch) con più tentativi e scelta del candidato più simile, per ridurre i
+  // brani "non trovati".
+  async function resolveUri(t) {
+    if (t.uri) return t.uri;
+    if (!TOKEN) return '';
+    const title = (t.title || '').trim();
+    const artist = (t.artist || '').trim();
+    if (!title) return '';
+    const queries = [];
+    if (artist) {
+      queries.push('track:"' + title + '" artist:"' + artist + '"');
+      queries.push(title + ' ' + artist);
+    }
+    queries.push('track:"' + title + '"');
+    queries.push(title);
+    let best = null, bestScore = 0;
+    for (const query of queries) {
+      try {
+        const r = await api('/search?type=track&limit=5&q=' + encodeURIComponent(query));
+        if (!r.ok) continue;
+        const d = await r.json();
+        const items = (d.tracks && d.tracks.items) || [];
+        for (const it of items) {
+          if (!it.uri) continue;
+          const sc = scoreCandidate(it, title, artist);
+          if (sc > bestScore) { best = it; bestScore = sc; }
+        }
+        if (bestScore >= 0.9) break;
+      } catch (e) {}
+    }
+    if (best && bestScore >= 0.4) {
+      t.uri = best.uri;
+      const img = best.album && best.album.images && best.album.images[0];
+      if (img) { t.art = img.url; if (!t.image) t.image = img.url; }
+      return t.uri;
+    }
+    return '';
+  }
+
+  // ---- Audio: voce (ElevenLabs MP3 o Web Speech fallback) + Spotify ----
+  function stopAudio() {
+    clearSpeechKaraoke();
+    try { window.speechSynthesis.cancel(); } catch (e) {}
+    if (currentAudio) {
+      try { currentAudio.pause(); currentAudio.currentTime = 0; } catch (e) {}
+      currentAudio = null;
+    }
+    awaitingEnd = false;
+    clearPlaybackWatch();
+        if (embedController && embedReady) {
+            try { embedController.pause(); } catch (e) {}
+        }
+  }
+
+  // Task 1/karaoke: genera (lazy) audio + marche temporali di narrazione per UN
+  // brano chiamando l'endpoint TTS locale ElevenLabs. Il server fa cache per hash
+  // del testo (riascolto = nessuna rigenerazione). Ritorna {audio_b64, marks} o null.
+  async function fetchTts(text) {
+    if (!TTS_ENDPOINT || !text) return null;
+    try {
+      const r = await fetch(TTS_ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Sonder-TTS-Token': TTS_TOKEN },
+        body: JSON.stringify({ text: text })
+      });
+      if (!r.ok) return null;
+      const data = await r.json();
+      if (!data || !data.audio_b64) return null;
+      return { audio_b64: data.audio_b64, marks: Array.isArray(data.marks) ? data.marks : [] };
+    } catch (e) { return null; }
+  }
+
+  // ---- Karaoke della narrazione (sottotitoli sincronizzati con la voce ElevenLabs) ----
+  // Le marche {w,s,e,c0} arrivano dallo STESSO convert_with_timestamps che ha prodotto
+  // l'audio, quindi parola e voce sono perfettamente allineate. Spezziamo in due
+  // paragrafi (Musixmatch / TheAudioDB) usando l'offset carattere c0.
+  function renderSpeechWords(track) {
+    const marks = (track && track.speech_marks) || [];
+    if (!marks.length) return false;
+    const musixLen = ((track.musixmatch_speech || '')).length;
+    const hasSplit = musixLen > 0 && (track.audiodb_speech || '').trim().length > 0;
+    let seg1 = '', seg2 = '';
+    marks.forEach((m, idx) => {
+      const span = '<span class="sp-word" data-i="' + idx + '">' + esc(m.w) + '</span> ';
+      if (hasSplit && m.c0 >= musixLen) seg2 += span; else seg1 += span;
+    });
+    cSpeech.innerHTML =
+      (seg1 ? '<div>' + seg1 + '</div>' : '') +
+      (seg2 ? '<div style="margin-top:12px;">' + seg2 + '</div>' : '');
+    return true;
+  }
+
+  function clearSpeechKaraoke() {
+    if (speechRaf) { cancelAnimationFrame(speechRaf); speechRaf = null; }
+    speechActiveIdx = -1;
+    cSpeech.querySelectorAll('.sp-word.active').forEach(el => el.classList.remove('active'));
+  }
+
+  function startSpeechKaraoke(audioEl, track) {
+    const marks = (track && track.speech_marks) || [];
+    if (!marks.length) return;
+    const spans = [];
+    cSpeech.querySelectorAll('.sp-word').forEach(el => { spans[parseInt(el.dataset.i)] = el; });
+    const centerCol = contentEl.parentElement;
+    speechActiveIdx = -1;
+    // Ultima parola il cui inizio <= t (ricerca binaria sui tempi crescenti).
+    function activeFor(t) {
+      let lo = 0, hi = marks.length - 1, res = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (marks[mid].s <= t) { res = mid; lo = mid + 1; } else { hi = mid - 1; }
+      }
+      return res;
+    }
+    function tick() {
+      if (!currentAudio || currentAudio !== audioEl) { speechRaf = null; return; }
+      const idx = activeFor((audioEl.currentTime || 0) + 0.04);
+      if (idx !== speechActiveIdx) {
+        if (speechActiveIdx >= 0 && spans[speechActiveIdx]) spans[speechActiveIdx].classList.remove('active');
+        speechActiveIdx = idx;
+        const el = idx >= 0 ? spans[idx] : null;
+        if (el) {
+          el.classList.add('active');
+          // Centratura SOLO del box (mai scrollIntoView: trascinerebbe l'intera pagina).
+          if (centerCol) {
+            const br = centerCol.getBoundingClientRect();
+            const er = el.getBoundingClientRect();
+            if (er.top < br.top + 12 || er.bottom > br.bottom - 12) {
+              const delta = (er.top - br.top) - (centerCol.clientHeight / 2) + (er.height / 2);
+              centerCol.scrollTo({ top: centerCol.scrollTop + delta, behavior: 'smooth' });
+            }
+          }
+        }
+      }
+      speechRaf = requestAnimationFrame(tick);
+    }
+    speechRaf = requestAnimationFrame(tick);
+  }
+
+  // speak(track, onend): riproduce la narrazione ElevenLabs del brano.
+  // Task 1: l'audio è PRE-GENERATO lato server (Python) e arriva già come
+  // base64 in track.audio_b64 (funziona anche in hosting, senza server TTS
+  // locale). Se manca, in locale prova l'endpoint loopback; il Web Speech API
+  // resta solo come ultima spiaggia quando ElevenLabs non è configurato.
+  // Task 4: in hosting (modalità embedded) l'audio non è pre-generato e non c'è un
+  // endpoint loopback raggiungibile dal browser. Chiediamo quindi al server di
+  // generare l'audio di QUESTO brano navigando il parent con i query param: Streamlit
+  // rigenera la pagina, produce il clip e, al reload, AUTOPLAY riprende la riproduzione.
+  function requestEmbeddedTts(i) {
+    const activeOrder = (order && order.length) ? order : TRACKS.map((_, idx) => idx);
+    let url;
+    try { url = new URL(document.referrer || window.location.href); }
+    catch (e) { url = new URL(window.location.href); }
+    url.searchParams.set('sonder_tts_track', String(i));
+    url.searchParams.set('sonder_tts_seq', autoSeq ? '1' : '0');
+    url.searchParams.set('sonder_tts_order', activeOrder.join(','));
+    url.searchParams.set('sonder_tts_pos', String(Math.max(0, seqPos)));
+    url.searchParams.set('sonder_tts_nonce', String(Date.now()));
+    if (STUDIO_ID) url.searchParams.set('sonder_studio_id', STUDIO_ID);
+    setStatus(I18N.generatingElevenlabs);
+    try { window.parent.location.href = url.toString(); }
+    catch (e) { window.location.href = url.toString(); }
+  }
+
+  async function speak(track, onend) {
+    // Stop anything currently playing.
+    clearSpeechKaraoke();
+    try { window.speechSynthesis.cancel(); } catch (e) {}
+    if (currentAudio) { try { currentAudio.pause(); } catch (e) {} currentAudio = null; }
+
+    const text = (track && track.speech) || '';
+    let audioB64 = (track && track.audio_b64) || '';
+
+    // 1) Locale: se l'audio non è già pronto ma esiste l'endpoint TTS loopback,
+    //    genera on-demand audio + marche temporali (in hosting TTS_ENDPOINT è vuoto).
+    if (!audioB64 && text && TTS_ENDPOINT) {
+      setStatus(I18N.generatingNarration);
+      const res = await fetchTts(text);
+      if (res && track) { audioB64 = res.audio_b64; track.audio_b64 = audioB64; track.speech_marks = res.marks; }
+    }
+
+    // 2) Hosting (embedded): nessun endpoint loopback -> chiedi al server di generare
+    //    questo brano e ricarica. onend NON viene chiamato: dopo il rerun riprende
+    //    AUTOPLAY (vedi blocco di init in fondo).
+    if (!audioB64 && text && !TTS_ENDPOINT && TTS_MODE === 'embedded') {
+      const idx = TRACKS.indexOf(track);
+      if (idx >= 0) { requestEmbeddedTts(idx); return; }
+    }
+
+    if (audioB64) {
+      renderSpeechWords(track);  // (ri)disegna le parole con span per il karaoke
+      const audio = new Audio('data:audio/mpeg;base64,' + audioB64);
+      currentAudio = audio;
+      audio.onended = () => { clearSpeechKaraoke(); currentAudio = null; onend && onend(); };
+      audio.onerror = () => { clearSpeechKaraoke(); currentAudio = null; onend && onend(); };
+      audio.onplay = () => { startSpeechKaraoke(audio, track); };
+      audio.play().catch(() => { clearSpeechKaraoke(); currentAudio = null; onend && onend(); });
+      return;
+    }
+
+    // Ultima spiaggia: browser Web Speech API (solo se ElevenLabs non è configurato).
+    if (!text) { onend && onend(); return; }
+    const u = new SpeechSynthesisUtterance(text);
+    if (TTSLANG) u.lang = TTSLANG;
+    u.rate = 0.98; u.pitch = 1.0;
+    u.onend = () => onend && onend();
+    u.onerror = () => onend && onend();
+    window.speechSynthesis.speak(u);
+  }
+
+  async function startSong(i, seq) {
+        const t = TRACKS[i];
+        let uri = t.uri || '';
+        if (!uri && TOKEN) {
+            setStatus(I18N.searchingTrack);
+            uri = await resolveUri(t);
+        }
+    if (!uri) { setStatus(I18N.trackNotFound); if (seq) setTimeout(advance, 1500); else setPlaying(-1); return; }
+        showSpotifyEmbed(uri);
+        if (embedController && embedReady) {
+            embedPlayed = false;
+            embedPosition = 0;
+            embedDuration = 0;
+            embedPaused = true;
+            try {
+                embedController.play();
+                setStatus(I18N.playingEmbed);
+                awaitingEnd = true;
+                // Avvia il watchdog: se entro qualche secondo il player non riporta
+                // alcuna riproduzione reale (embedPlayed resta false), presumiamo
+                // che lo Spotify Embed sia rate-limited/non disponibile e attiviamo
+                // il messaggio "SPOTIFY al momento non disponibile" + logout.
+                clearPlaybackWatch();
+                playbackWatchTimer = setTimeout(() => {
+                    if (current === i && awaitingEnd && !embedPlayed) {
+                        handleSpotifyRateLimit();
+                    }
+                }, 9000);
+            } catch (e) {
+                setStatus(I18N.trackLoaded);
+                if (seq) setTimeout(advance, 2500); else setPlaying(-1);
+            }
+        } else {
+            setStatus(I18N.trackLoaded);
+            if (seq) setTimeout(advance, 2500); else setPlaying(-1);
+    }
+  }
+
+  function runTrack(i, seq) {
+    stopAudio();
+    current = i;
+    setPlaying(i);
+    highlight(i);
+    showCenter(i);
+    // Narrazione attiva -> voce poi Spotify; spenta -> solo Spotify.
+    if (narrationOn) {
+      setStatus(I18N.narrating);
+      speak(TRACKS[i], () => startSong(i, seq));
+    } else {
+      startSong(i, seq);
+    }
+  }
+
+  function advance() {
+    awaitingEnd = false;
+    seqPos += 1;
+    if (autoSeq && seqPos < order.length) {
+      runTrack(order[seqPos], true);
+    } else {
+      autoSeq = false;
+      setPlaying(-1);
+      setStatus(I18N.endOfPlaylist);
+    }
+  }
+
+  function shuffleArray(a) {
+    for (let k = a.length - 1; k > 0; k--) {
+      const j = Math.floor(Math.random() * (k + 1));
+      [a[k], a[j]] = [a[j], a[k]];
+    }
+    return a;
+  }
+
+  document.getElementById('playAll').addEventListener('click', () => {
+    if (!TRACKS.length) return;
+    if (playingIdx >= 0) { stopAll(); return; }
+    order = TRACKS.map((_, i) => i);
+    if (shuffleOn) shuffleArray(order);
+    autoSeq = true; seqPos = 0;
+    runTrack(order[0], true);
+  });
+
+  document.getElementById('shuffle').addEventListener('click', (e) => {
+    shuffleOn = !shuffleOn;
+    e.currentTarget.classList.toggle('on', shuffleOn);
+    setStatus(shuffleOn ? I18N.shuffleOn : I18N.ready);
+  });
+
+    // ---- Spotify Embed IFrame API (player ufficiale Spotify) ----
+    window.onSpotifyIframeApiReady = (IFrameAPI) => {
+        const host = document.getElementById('sp-embed');
+        if (!host) return;
+        IFrameAPI.createController(host, {
+            width: '100%',
+            height: '152',
+            uri: pendingUri || 'spotify:track:4uLU6hMCjMI75M1A2tKUQC'
+        }, (controller) => {
+            embedController = controller;
+            embedReady = true;
+            setPMsg('');
+            controller.addListener('playback_update', onState);
+            if (pendingUri) {
+                try { controller.loadUri(pendingUri); } catch (e) {}
+            }
+        });
+    };
+
+  function onState(state) {
+        if (!state || !state.data) return;
+        const d = state.data;
+        embedPosition = typeof d.position === 'number' ? d.position : embedPosition;
+        embedDuration = typeof d.duration === 'number' ? d.duration : embedDuration;
+        embedPaused = !!d.isPaused;
+        lastPlaybackUpdateTs = Date.now();
+        if (!embedPaused && embedPosition > 0) {
+            embedPlayed = true;
+            // Il player e' davvero partito: il rate-limit non si e' verificato.
+            clearPlaybackWatch();
+        }
+
+        if (current >= 0) syncLyrics(embedPosition, embedDuration);
+        if (awaitingEnd && embedPlayed && embedPaused && embedPosition === 0) {
+            awaitingEnd = false;
+            if (autoSeq) advance();
+            else { setPlaying(-1); setStatus(I18N.ready); }
+        }
+  }
+
+  setInterval(() => {
+        if (current < 0 || embedPaused || !embedDuration) return;
+        const elapsedMs = Date.now() - lastPlaybackUpdateTs;
+        const estimatedPosition = embedPosition > 1000
+            ? embedPosition + elapsedMs
+            : embedPosition + (elapsedMs / 1000);
+        syncLyrics(estimatedPosition, embedDuration);
+  }, 250);
+
+    // Fase 2: il parent invia i testi narrati appena pronti. Aggiorniamo TRACKS
+    // in-place (niente reload, cosi' un'eventuale riproduzione Spotify continua),
+    // riabilitiamo la narrazione e sostituiamo la barra col testo del brano aperto.
+    window.addEventListener('message', (ev) => {
+      // Lo Spotify Embed (iframe figlio, cross-origin) quando e' rate-limited
+      // pubblica un messaggio che contiene il testo "Your application has reached a
+      // rate/request limit." (NON un 429). Lo intercettiamo qui — prima del check
+      // sul parent, perche' arriva dall'embed e non dal parent — e attiviamo lo
+      // stesso flusso "SPOTIFY al momento non disponibile" del 429. Per sicurezza
+      // accettiamo questo segnale SOLO se l'origine e' davvero Spotify, cosi' un
+      // postMessage forgiato da un altro frame non puo' forzare il logout.
+      try {
+        const origin = String((ev && ev.origin) || '');
+        if (/^https:\/\/([a-z0-9-]+\.)*spotify\.com$/i.test(origin)) {
+          const raw = ev && ev.data;
+          const txt = typeof raw === 'string' ? raw : JSON.stringify(raw);
+          if (txt && /reached a rate|rate\/request limit/i.test(txt)) {
+            handleSpotifyRateLimit();
+            return;
+          }
+        }
+      } catch (e) {}
+
+      // Accetta i testi narrati solo dal parent (non da altri frame/embed).
+      if (ev.source !== window.parent) return;
+      const d = ev && ev.data;
+      if (!d || d.type !== 'sonder-narration') return;
+      const speeches = Array.isArray(d.speeches) ? d.speeches : [];
+      speeches.forEach((s, i) => { if (TRACKS[i]) TRACKS[i].speech = s || ''; });
+      narrationPending = false;
+      updateNarrationBtn();
+      if (current >= 0 && TRACKS[current]) renderSpeechBlock(TRACKS[current]);
+    });
+    // Handshake: avvisa il parent che il listener e' pronto, cosi' ci re-invia
+    // i testi narrati gia' disponibili (evita la gara in cui la narrazione torna
+    // prima che l'iframe abbia registrato il listener).
+    try { if (window.parent) window.parent.postMessage({ type: 'sonder-studio-ready' }, '*'); } catch (e) {}
+
+    // Stato iniziale dei controlli: narrazione spenta, tasti su "Play".
+    updateNarrationBtn();
+    updateControls();
+
+    // Stato iniziale dell'area player.
+    // Spotify collegato: si mostra il player. Spotify NON collegato: si rimuove il
+    // pannello del player e si lascia uno spazio vuoto delle stesse dimensioni
+    // (la colonna mantiene il layout e i testi restano visibili sotto).
+    if (TOKEN) {
+        document.getElementById('player').style.display = 'block';
+        document.getElementById('need-login').style.display = 'none';
+    } else {
+        document.getElementById('player').style.display = 'none';
+        const nl = document.getElementById('need-login');
+        nl.style.display = 'block';
+        nl.textContent = '';
+        nl.style.minHeight = '152px';
+    }
+    if (TRACKS.length) {
+        // Task 4: se rientriamo dopo aver generato l'audio embedded di un brano,
+        // AUTOPLAY indica quale brano mostrare. Non avviamo l'audio automaticamente:
+        // dopo un full-page reload il browser puo' bloccare play() perche' non e'
+        // piu' dentro il gesto utente originale. Il click successivo riproduce il
+        // base64 gia' pronto, senza rigenerarlo.
+        const ap = (AUTOPLAY && typeof AUTOPLAY === 'object') ? AUTOPLAY : {};
+        const apIndex = Number.isInteger(ap.index) ? ap.index : -1;
+        if (apIndex >= 0 && apIndex < TRACKS.length) {
+            order = (Array.isArray(ap.order) && ap.order.length) ? ap.order : TRACKS.map((_, i) => i);
+            autoSeq = Boolean(ap.seq);
+            seqPos = Number.isInteger(ap.pos) ? Math.max(0, ap.pos) : 0;
+            current = apIndex;
+            highlight(apIndex);
+            showCenter(apIndex);
+            setStatus(I18N.narrationReady);
+        } else {
+            current = 0;
+            highlight(0);
+            showCenter(0);
+        }
+  }
+</script>
+<script src="https://open.spotify.com/embed/iframe-api/v1" async></script>
+</body>
+</html>

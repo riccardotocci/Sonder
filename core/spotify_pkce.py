@@ -21,7 +21,7 @@ TOKEN_URL = "https://accounts.spotify.com/api/token"
 
 # Permessi minimi: lettura profilo (ricerca brani col token utente) +
 # user-top-read per derivare temi narrativi dagli ascolti reali (task 10).
-SCOPES = "user-read-private user-top-read"
+SCOPES = "user-read-private user-top-read playlist-modify-public playlist-modify-private"
 
 
 class SpotifyPKCEError(RuntimeError):

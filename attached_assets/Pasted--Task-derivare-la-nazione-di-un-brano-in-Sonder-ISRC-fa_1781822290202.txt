@@ -1,0 +1,42 @@
+# Task: derivare la nazione di un brano in Sonder (ISRC + fallback artista)
+
+## Contesto
+Repo: Sonder (FastAPI backend + React/Vite frontend; client di servizio in `core/`).
+Convenzioni vincolanti (vedi AGENTS.md): commenti/docstring in italiano, graceful
+degradation obbligatoria (l'app deve girare con zero API key), ogni client segue il
+pattern `Classe` + eccezione `*Error`, le funzioni della pipeline restano pure e
+thread-safe. Tre formati di codice lingua/paese coesistono — non mischiarli.
+
+## Premessa già verificata (NON ri-investigare)
+L'endpoint Musixmatch `chart.tracks.get` (track.chart) NON restituisce la nazione di
+pubblicazione di un singolo: il parametro `country` è un INPUT (di quale paese vuoi la
+classifica), e la risposta non contiene alcun campo "paese di release". Quindi le chart
+NON vanno usate per questo scopo.
+
+## Obiettivo
+Ricavare in modo affidabile un "country code" associato a una traccia, da usare nello
+Studio/sezione geo, con questa priorità:
+1. Country dell'artista da MusicBrainz / TheAudioDB (fonte primaria, già presente nel
+   flusso dati artista).
+2. Fallback: prefisso ISRC (primi 2 caratteri = country del registrant, es.
+   `ITB002500020` → `IT`). L'ISRC è disponibile da `track.search` / `track.get` /
+   Spotify. NB: è il paese di REGISTRAZIONE dell'ISRC, non garantito = paese di uscita;
+   documentalo nel codice.
+
+## Deliverable
+- Un helper puro (es. `isrc_country(isrc: str) -> str | None`) che estragga e validi il
+  prefisso a 2 lettere, gestendo input vuoti/malformati senza sollevare eccezioni.
+- Integrazione nel punto in cui lo Studio determina la nazione, rispettando l'ordine di
+  priorità sopra e la conversione tra i formati di codice paese già usati nel repo
+  (vedi helper in `backend/constants.py`).
+- Nessuna nuova dipendenza; nessuna chiamata esterna aggiuntiva obbligatoria.
+
+## Criteri di accettazione
+- L'app boota e funziona senza chiavi API (demo mode intatto).
+- ISRC valido → country corretto; ISRC mancante/non valido → fallback all'artista o
+  `None`, senza crash.
+- Commenti/docstring in italiano; helper testabile in isolamento.
+
+## Scope
+Solo la derivazione del country del brano. NON toccare la logica delle chart, TTS,
+Spotify auth o pipeline non correlate.

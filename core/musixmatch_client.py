@@ -23,6 +23,43 @@ class MusixmatchError(RuntimeError):
     """Errore generico durante una chiamata a Musixmatch."""
 
 
+def _first_commontrack_isrc(value: Any) -> str:
+    """Primo ISRC (maiuscolo) da ``commontrack_isrcs``.
+
+    ``track.get`` puo' restituire ``commontrack_isrcs`` come lista annidata di
+    stringhe ISRC (tutte le release del brano). Quando manca ``track_isrc`` si usa
+    il primo disponibile. Tollerante a ``None`` e a forme miste.
+    """
+    if isinstance(value, str):
+        return value.strip().upper()
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            found = _first_commontrack_isrc(item)
+            if found:
+                return found
+    return ""
+
+
+def _best_coverart(data: dict[str, Any]) -> str:
+    """URL della copertina piu' grande disponibile (placeholder esclusi).
+
+    ``track.get``/``track.lyrics.fingerprint.post`` espongono piu' tagli di
+    copertina (100/350/500/800). Si sceglie il piu' grande non vuoto, si scarta il
+    placeholder "nocover" e si forza ``https`` (gli URL Musixmatch arrivano spesso
+    in ``http``, che su una pagina sicura verrebbe bloccato come mixed content).
+    """
+    for key in (
+        "album_coverart_800x800",
+        "album_coverart_500x500",
+        "album_coverart_350x350",
+        "album_coverart_100x100",
+    ):
+        url = str(data.get(key) or "").strip()
+        if url and "nocover" not in url.lower():
+            return url.replace("http://", "https://")
+    return ""
+
+
 @dataclass
 class Track:
     """Rappresentazione semplificata di una traccia Musixmatch."""
@@ -31,9 +68,14 @@ class Track:
     track_name: str
     artist_name: str
     album_name: str = ""
+    cover_art: str = ""
     has_lyrics: bool = False
     has_richsync: bool = False
     explicit: bool = False
+    instrumental: bool = False
+    duration: int = 0
+    isrc: str = ""
+    spotify_id: str = ""
     genres: list[str] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
 
@@ -50,14 +92,37 @@ class Track:
         except (AttributeError, KeyError, TypeError):
             genres = []
 
+        # track.get (e track.lyrics.fingerprint.post, che ritorna gli stessi campi)
+        # espone track_isrc (singolo) e/o commontrack_isrcs (tutte le release del
+        # brano, lista annidata). track.search invece non li include.
+        isrc = str(data.get("track_isrc") or "").strip().upper()
+        if not isrc:
+            isrc = _first_commontrack_isrc(data.get("commontrack_isrcs"))
+        # track_spotify_id identifica il brano su Spotify senza ricerca testuale:
+        # stabilizza l'URI del player e il link "apri su Spotify".
+        spotify_id = str(data.get("track_spotify_id") or "").strip()
+        # Copertina album e durata: metadati extra dallo stesso payload, oggi non
+        # sfruttati. La cover da' un'artwork reale a ogni brano; la durata arricchisce
+        # i metadati mostrati nello Studio.
+        cover_art = _best_coverart(data)
+        try:
+            duration = int(data.get("track_length") or 0)
+        except (TypeError, ValueError):
+            duration = 0
+
         return cls(
             track_id=data.get("track_id", 0),
             track_name=data.get("track_name", ""),
             artist_name=data.get("artist_name", ""),
             album_name=data.get("album_name", ""),
+            cover_art=cover_art,
             has_lyrics=bool(data.get("has_lyrics", 0)),
             has_richsync=bool(data.get("has_richsync", 0)),
             explicit=bool(data.get("explicit", 0)),
+            instrumental=bool(data.get("instrumental", 0)),
+            duration=duration,
+            isrc=isrc,
+            spotify_id=spotify_id,
             genres=genres,
             raw=data,
         )
@@ -119,17 +184,43 @@ class MusixmatchClient:
     # ------------------------------------------------------------------ #
     # Low-level
     # ------------------------------------------------------------------ #
-    def _request(self, endpoint: str, **params: Any) -> dict[str, Any]:
+    def _require_key(self) -> str:
         if not self.api_key:
             raise MusixmatchError(
                 "Chiave API Musixmatch mancante. Imposta MUSIXMATCH_API_KEY o MXM_KEY nel file .env"
             )
+        return self.api_key
 
-        params["apikey"] = self.api_key
+    def _request(self, endpoint: str, **params: Any) -> dict[str, Any]:
+        params = dict(params)
+        params["apikey"] = self._require_key()
         url = f"{API_BASE}/{endpoint}"
-
         try:
             response = self.session.get(url, params=params, timeout=self.timeout)
+        except requests.RequestException as exc:
+            raise MusixmatchError(f"Errore di rete Musixmatch: {exc}") from exc
+        return self._unwrap(response)
+
+    def _post(self, endpoint: str, data: dict[str, Any], **params: Any) -> dict[str, Any]:
+        """POST con corpo JSON (es. ``track.lyrics.analysis.search``)."""
+        params = dict(params)
+        params["apikey"] = self._require_key()
+        url = f"{API_BASE}/{endpoint}"
+        try:
+            response = self.session.post(
+                url,
+                params=params,
+                json=data,
+                headers={"Content-Type": "application/json"},
+                timeout=self.timeout,
+            )
+        except requests.RequestException as exc:
+            raise MusixmatchError(f"Errore di rete Musixmatch: {exc}") from exc
+        return self._unwrap(response)
+
+    @staticmethod
+    def _unwrap(response: requests.Response) -> dict[str, Any]:
+        try:
             response.raise_for_status()
         except requests.RequestException as exc:
             raise MusixmatchError(f"Errore di rete Musixmatch: {exc}") from exc
@@ -186,6 +277,118 @@ class MusixmatchClient:
         body = self._request("track.search", **params)
         track_list = body.get("track_list", []) or []
         return [Track.from_api(item["track"]) for item in track_list if item.get("track")]
+
+    def search_lyrics_analysis(
+        self, meaning: str, *, limit: int = 20
+    ) -> list[tuple["Track", dict[str, Any]]]:
+        """Ricerca semantica per "significato" dei testi.
+
+        Usa l'endpoint POST ``track.lyrics.analysis.search`` con corpo
+        ``{"data": {"meaning": "..."}}``. Ogni traccia restituita porta con se'
+        l'analisi dei testi (mood, temi, rating, ...) e i generi primari, quindi
+        non serve un secondo round-trip per arricchirla. Ritorna una lista di
+        coppie ``(Track, analysis)``; lista vuota se non ci sono risultati.
+        """
+        meaning = (meaning or "").strip()
+        if not meaning:
+            return []
+        body = self._post(
+            "track.lyrics.analysis.search", {"data": {"meaning": meaning}}
+        )
+        track_list = body.get("track_list", []) or []
+        out: list[tuple[Track, dict[str, Any]]] = []
+        for item in track_list:
+            track_data = item.get("track") if isinstance(item, dict) else None
+            if not track_data:
+                continue
+            analysis = item.get("analysis") if isinstance(item, dict) else {}
+            out.append((Track.from_api(track_data), analysis or {}))
+            if len(out) >= max(1, limit):
+                break
+        return out
+
+    def fingerprint_lyrics(
+        self, text: str, *, size: int = 10, limit: int = 3
+    ) -> list[tuple[Track, float]]:
+        """Identifica la traccia canonica a partire da un testo (Lyric Fingerprint).
+
+        Endpoint POST ``track.lyrics.fingerprint.post`` (prodotto "Sentinel"):
+        confronta un testo arbitrario col catalogo e restituisce una lista
+        ordinata di tracce con punteggio di ``similarity``. Ogni traccia porta gli
+        stessi campi di ``track.get`` (``track_isrc``, ``track_spotify_id``,
+        ``primary_genres``, ...), quindi serve a STABILIZZARE l'identita' del brano
+        (ID/ISRC/Spotify/genere) quando la ricerca per titolo/artista e' incerta.
+
+        NB: e' un endpoint del piano Enterprise; su piani inferiori risponde 403
+        (gestito come ``MusixmatchError``). Richiede un testo di almeno ~10 parole.
+        Ritorna coppie ``(Track, similarity)`` ordinate per similarita' decrescente;
+        lista vuota se il testo e' troppo corto o non ci sono match.
+        """
+        text = (text or "").strip()
+        if len(text.split()) < 10:
+            return []
+        body = self._post(
+            "track.lyrics.fingerprint.post",
+            {"data": {"text": text}},
+            size=max(1, min(int(size), 20)),
+            limit=max(1, int(limit)),
+        )
+        track_list = body.get("track_list", []) or []
+        out: list[tuple[Track, float]] = []
+        for item in track_list:
+            if not isinstance(item, dict):
+                continue
+            track_data = item.get("track")
+            if not track_data:
+                continue
+            try:
+                similarity = float(item.get("similarity") or 0.0)
+            except (TypeError, ValueError):
+                similarity = 0.0
+            out.append((Track.from_api(track_data), similarity))
+        out.sort(key=lambda pair: pair[1], reverse=True)
+        return out
+
+    def get_lyrics_analysis(self, track_id: int) -> dict[str, Any]:
+        """Analisi testuale di una traccia (``track.lyrics.analysis.get``).
+
+        Richiede il ``track_id`` reale (NON il commontrack_id). Ritorna il dict
+        ``analysis`` (mood, temi, rating, ...) oppure ``{}`` se l'analisi non e'
+        disponibile o l'endpoint non e' accessibile per il piano corrente
+        (degrada con grazia: i chiamanti trattano il vuoto come "nessun mood").
+        """
+        if not track_id:
+            return {}
+        try:
+            body = self._request("track.lyrics.analysis.get", track_id=track_id)
+        except MusixmatchError:
+            return {}
+        analysis = body.get("analysis")
+        return analysis if isinstance(analysis, dict) else {}
+
+    @staticmethod
+    def analysis_moods(analysis: dict[str, Any]) -> list[str]:
+        """Estrae i mood testuali (``moods.main_moods``) da un dict di analisi."""
+        moods = ((analysis or {}).get("moods") or {}).get("main_moods") or []
+        if not isinstance(moods, list):
+            return []
+        return [str(m).strip() for m in moods if str(m).strip()]
+
+    @staticmethod
+    def analysis_themes(analysis: dict[str, Any]) -> list[str]:
+        """Estrae i temi (``themes.main_themes[].theme``) da un dict di analisi."""
+        themes = ((analysis or {}).get("themes") or {}).get("main_themes") or []
+        if not isinstance(themes, list):
+            return []
+        out: list[str] = []
+        for item in themes:
+            if isinstance(item, dict):
+                name = str(item.get("theme") or "").strip()
+            else:
+                name = str(item or "").strip()
+            if name:
+                out.append(name)
+        return out
 
     def get_lyrics(self, track_id: int) -> Lyrics:
         """Recupera il testo a partire dall'ID traccia."""
