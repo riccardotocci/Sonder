@@ -155,19 +155,19 @@ def _detect_narration_lang(text: str) -> str:
 
 
 GREETINGS: dict[str, str] = {
-    "Italiano": "**Sonder** — ogni canzone una storia diversa",
-    "English": "**Sonder** — each song a different story",
-    "Français": "**Sonder** — chaque chanson une histoire différente",
-    "Español": "**Sonder** — cada canción una historia diferente",
-    "Deutsch": "**Sonder** — jeder Song eine andere Geschichte",
-    "Português": "**Sonder** — cada canção uma história diferente",
-    "Nederlands": "**Sonder** — elk lied een ander verhaal",
-    "Polski": "**Sonder** — każda piosenka to inna historia",
-    "Русский": "**Sonder** — каждая песня — своя история",
-    "日本語": "**Sonder** — すべての曲に、それぞれの物語を",
-    "中文": "**Sonder** — 每首歌，都是一个不同的故事",
-    "한국어": "**Sonder** — 모든 노래엔 저마다의 이야기",
-    "العربية": "**Sonder** — لكل أغنية قصة مختلفة",
+    "Italiano": "**Sonder** — canzoni diverse, stessa storia",
+    "English": "**Sonder** — different songs, same story",
+    "Français": "**Sonder** — des chansons différentes, la même histoire",
+    "Español": "**Sonder** — canciones diferentes, la misma historia",
+    "Deutsch": "**Sonder** — verschiedene Songs, dieselbe Geschichte",
+    "Português": "**Sonder** — canções diferentes, a mesma história",
+    "Nederlands": "**Sonder** — verschillende liedjes, hetzelfde verhaal",
+    "Polski": "**Sonder** — różne piosenki, ta sama historia",
+    "Русский": "**Sonder** — разные песни, одна история",
+    "日本語": "**Sonder** — 違う歌、同じ物語",
+    "中文": "**Sonder** — 不同的歌，同样的故事",
+    "한국어": "**Sonder** — 다른 노래, 같은 이야기",
+    "العربية": "**Sonder** — أغانٍ مختلفة، نفس القصة",
 }
 
 REFUSALS: dict[str, str] = {
